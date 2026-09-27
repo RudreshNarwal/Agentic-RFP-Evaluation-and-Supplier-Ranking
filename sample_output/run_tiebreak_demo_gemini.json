@@ -1,0 +1,519 @@
+{
+  "rfp_run_id": "RFP-20260927-214557-3343",
+  "created_at": "2026-09-27T21:45:57",
+  "status": "completed",
+  "llm": {
+    "provider": "gemini",
+    "model": "gemini-3.8-flash"
+  },
+  "criteria": [
+    {
+      "criterion_id": 1,
+      "name": "Technical Capability",
+      "description": "Architecture, integrations, scalability, technical fit",
+      "weight": 30.0,
+      "max_score": 10.0,
+      "is_active": 1
+    },
+    {
+      "criterion_id": 2,
+      "name": "Implementation Plan",
+      "description": "Timeline, milestones, staffing, risk plan",
+      "weight": 20.0,
+      "max_score": 10.0,
+      "is_active": 1
+    },
+    {
+      "criterion_id": 3,
+      "name": "Commercial Value",
+      "description": "Pricing clarity, total cost, assumptions",
+      "weight": 20.0,
+      "max_score": 10.0,
+      "is_active": 1
+    },
+    {
+      "criterion_id": 4,
+      "name": "Security & Compliance",
+      "description": "Controls, certifications, privacy, auditability",
+      "weight": 20.0,
+      "max_score": 10.0,
+      "is_active": 1
+    },
+    {
+      "criterion_id": 5,
+      "name": "Support & Experience",
+      "description": "Support model, similar projects, references",
+      "weight": 10.0,
+      "max_score": 10.0,
+      "is_active": 1
+    }
+  ],
+  "formulas": {
+    "absolute_score": "sum over criteria of (score / max_score) * weight",
+    "benchmark": "highest validated score for the criterion across all suppliers in the run",
+    "gap": "score - benchmark (0 for the benchmark leader, otherwise negative)",
+    "relative_pct": "score / benchmark * 100; if benchmark == 0 then 0 (no supplier showed evidence, no peer credit)",
+    "ppi": "sum(relative_pct * weight) / sum(weight)"
+  },
+  "tie_break_order": [
+    "1) Higher PPI",
+    "2) Earlier submission date",
+    "3) Higher historical experience rating",
+    "4) Supplier name (A\u2192Z, case-insensitive)"
+  ],
+  "benchmarks": {
+    "1": 7.5,
+    "2": 7.5,
+    "3": 7.0,
+    "4": 8.0,
+    "5": 6.5
+  },
+  "suppliers": [
+    {
+      "supplier_name": "Delta Analytics",
+      "submission_date": "2026-02-20",
+      "experience_rating": 3.0,
+      "absolute_score": 74.0,
+      "ppi": 100.0,
+      "criteria": [
+        {
+          "criterion_id": 1,
+          "name": "Technical Capability",
+          "weight": 30.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 22.5,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Delta Analytics offers a solid Azure-hosted analytics architecture with packaged dashboards and a certified SAP S/4HANA connector tested up to 10 million spend lines. However, integration for Coupa relies on batch nightly CSV imports rather than a direct API integration.",
+          "evidence": "[Page 1] Hosted analytics platform on Azure with a certified SAP S/4HANA connector and nightly CSV import for Coupa. Tested with 10 million spend lines. Standard spend, supplier and contract dashboards.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 2,
+          "name": "Implementation Plan",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 15.0,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The proposal provides a structured 16-week timeline across clear phases and a dedicated 5 FTE project team. However, the plan relies on a traditional waterfall approach with limited operational detail on contingency planning.",
+          "evidence": "[Page 1] Delivery follows a waterfall plan with a weekly status report and a monthly steering meeting....Team: Project manager, solution architect, 2 data engineers, BI developer (5 FTE)....Monthly risk review; top risks tracked in a shared register.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 3,
+          "name": "Commercial Value",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.0,
+          "weighted_points": 14.0,
+          "benchmark": 7.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The pricing provides a clear fixed-fee breakdown totaling $730,000 across licensing, implementation, connectors, and support over three years. However, total cost is exposed to variable hosting fees estimated at $3,000 per month and places Coupa export operational overhead on Northwind.",
+          "evidence": "[Page 1] Total $730,000 Assumptions: \u2022 Azure consumption billed at cost, estimated at $3,000/month. \u2022 Coupa data provided as nightly CSV exports by Northwind.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 4,
+          "name": "Security & Compliance",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 8.0,
+          "weighted_points": 16.0,
+          "benchmark": 8.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The vendor meets key baseline security and governance requirements with ISO/IEC 27001 certification, encryption, SAML SSO, and GDPR compliance. Audit logging is supported for one year, although detailed threat monitoring or penetration test results are not detailed.",
+          "evidence": "[Page 1] \u2022 ISO/IEC 27001 certified. Encryption at rest and in transit. SSO via SAML 2.0. \u2022 Role-based access; audit log retained for 1 year. GDPR DPA available.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 5,
+          "name": "Support & Experience",
+          "weight": 10.0,
+          "max_score": 10.0,
+          "score": 6.5,
+          "weighted_points": 6.5,
+          "benchmark": 6.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Delta Analytics demonstrates relevant domain experience with four mid-sized retail implementations and defined business-hours support SLAs. A gap is the absence of 24/7 support for critical issues and the deferral of reference access until after shortlisting.",
+          "evidence": "[Page 2] Support: Business-hours support with 4-hour response for critical incidents; quarterly service reviews. Relevant experience: Four procurement analytics projects for mid-sized retailers since 2021. References: \u2022 Two retail references available after shortlisting.",
+          "evidence_verified": true
+        }
+      ],
+      "final_rank": 1,
+      "tie_break_note": "Ranked above Echo Analytics: PPI tie, earlier submission date (2026-02-20 vs 2026-02-24).",
+      "source_file": "tiebreak_demo/Delta_Analytics.pdf",
+      "evaluation_status": "ok",
+      "risks": [
+        "Coupa integration dependency on Northwind to generate nightly CSV exports rather than automated direct connector",
+        "Variable Azure consumption costs billed at cost (estimated at $3,000/month) adding approximately $108,000 in unbudgeted risk over three years",
+        "Support coverage is restricted to business hours with up to a 4-hour critical response window, offering no after-hours incident coverage",
+        "Client references are withheld until shortlisting, preventing immediate verification of past performance"
+      ],
+      "overall_summary": "Delta Analytics presents a viable, packaged procurement analytics solution hosted on Azure with standard retail dashboards, ISO 27001 compliance, and transparent core pricing of $730,000. However, the proposal carries integration dependencies via CSV for Coupa, variable cloud hosting fees, business-hours-only support, and deferred customer references.",
+      "warnings": [],
+      "self_correction": null
+    },
+    {
+      "supplier_name": "Echo Analytics",
+      "submission_date": "2026-02-24",
+      "experience_rating": 5.0,
+      "absolute_score": 74.0,
+      "ppi": 100.0,
+      "criteria": [
+        {
+          "criterion_id": 1,
+          "name": "Technical Capability",
+          "weight": 30.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 22.5,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Echo Analytics offers a solid Azure-hosted analytics architecture with packaged dashboards and a certified SAP S/4HANA connector tested up to 10 million spend lines. However, integration for Coupa relies on batch nightly CSV imports rather than a direct API integration.",
+          "evidence": "[Page 1] Hosted analytics platform on Azure with a certified SAP S/4HANA connector and nightly CSV import for Coupa. Tested with 10 million spend lines. Standard spend, supplier and contract dashboards.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 2,
+          "name": "Implementation Plan",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 15.0,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The proposal provides a structured 16-week timeline across clear phases and a dedicated 5 FTE project team. However, the plan relies on a traditional waterfall approach with limited operational detail on contingency planning.",
+          "evidence": "[Page 1] Delivery follows a waterfall plan with a weekly status report and a monthly steering meeting....Team: Project manager, solution architect, 2 data engineers, BI developer (5 FTE)....Monthly risk review; top risks tracked in a shared register.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 3,
+          "name": "Commercial Value",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.0,
+          "weighted_points": 14.0,
+          "benchmark": 7.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The pricing provides a clear fixed-fee breakdown totaling $730,000 across licensing, implementation, connectors, and support over three years. However, total cost is exposed to variable hosting fees estimated at $3,000 per month and places Coupa export operational overhead on Northwind.",
+          "evidence": "[Page 1] Total $730,000 Assumptions: \u2022 Azure consumption billed at cost, estimated at $3,000/month. \u2022 Coupa data provided as nightly CSV exports by Northwind.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 4,
+          "name": "Security & Compliance",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 8.0,
+          "weighted_points": 16.0,
+          "benchmark": 8.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The vendor meets key baseline security and governance requirements with ISO/IEC 27001 certification, encryption, SAML SSO, and GDPR compliance. Audit logging is supported for one year, although detailed threat monitoring or penetration test results are not detailed.",
+          "evidence": "[Page 1] \u2022 ISO/IEC 27001 certified. Encryption at rest and in transit. SSO via SAML 2.0. \u2022 Role-based access; audit log retained for 1 year. GDPR DPA available.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 5,
+          "name": "Support & Experience",
+          "weight": 10.0,
+          "max_score": 10.0,
+          "score": 6.5,
+          "weighted_points": 6.5,
+          "benchmark": 6.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Echo Analytics demonstrates relevant domain experience with four mid-sized retail implementations and defined business-hours support SLAs. A gap is the absence of 24/7 support for critical issues and the deferral of reference access until after shortlisting.",
+          "evidence": "[Page 2] Support: Business-hours support with 4-hour response for critical incidents; quarterly service reviews. Relevant experience: Four procurement analytics projects for mid-sized retailers since 2021. References: \u2022 Two retail references available after shortlisting.",
+          "evidence_verified": true
+        }
+      ],
+      "final_rank": 2,
+      "tie_break_note": "Ranked above Foxtrot Analytics: PPI and date tie, higher experience rating (5.0 vs 3.0).",
+      "source_file": "tiebreak_demo/Echo_Analytics.pdf",
+      "evaluation_status": "ok",
+      "risks": [
+        "Coupa integration dependency on Northwind to generate nightly CSV exports rather than automated direct connector",
+        "Variable Azure consumption costs billed at cost (estimated at $3,000/month) adding approximately $108,000 in unbudgeted risk over three years",
+        "Support coverage is restricted to business hours with up to a 4-hour critical response window, offering no after-hours incident coverage",
+        "Client references are withheld until shortlisting, preventing immediate verification of past performance"
+      ],
+      "overall_summary": "Echo Analytics presents a viable, packaged procurement analytics solution hosted on Azure with standard retail dashboards, ISO 27001 compliance, and transparent core pricing of $730,000. However, the proposal carries integration dependencies via CSV for Coupa, variable cloud hosting fees, business-hours-only support, and deferred customer references.",
+      "warnings": [
+        "Echo Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically. Review for a duplicate or collusive bid."
+      ],
+      "self_correction": null
+    },
+    {
+      "supplier_name": "Foxtrot Analytics",
+      "submission_date": "2026-02-24",
+      "experience_rating": 3.0,
+      "absolute_score": 74.0,
+      "ppi": 100.0,
+      "criteria": [
+        {
+          "criterion_id": 1,
+          "name": "Technical Capability",
+          "weight": 30.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 22.5,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Foxtrot Analytics offers a solid Azure-hosted analytics architecture with packaged dashboards and a certified SAP S/4HANA connector tested up to 10 million spend lines. However, integration for Coupa relies on batch nightly CSV imports rather than a direct API integration.",
+          "evidence": "[Page 1] Hosted analytics platform on Azure with a certified SAP S/4HANA connector and nightly CSV import for Coupa. Tested with 10 million spend lines. Standard spend, supplier and contract dashboards.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 2,
+          "name": "Implementation Plan",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 15.0,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The proposal provides a structured 16-week timeline across clear phases and a dedicated 5 FTE project team. However, the plan relies on a traditional waterfall approach with limited operational detail on contingency planning.",
+          "evidence": "[Page 1] Delivery follows a waterfall plan with a weekly status report and a monthly steering meeting....Team: Project manager, solution architect, 2 data engineers, BI developer (5 FTE)....Monthly risk review; top risks tracked in a shared register.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 3,
+          "name": "Commercial Value",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.0,
+          "weighted_points": 14.0,
+          "benchmark": 7.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The pricing provides a clear fixed-fee breakdown totaling $730,000 across licensing, implementation, connectors, and support over three years. However, total cost is exposed to variable hosting fees estimated at $3,000 per month and places Coupa export operational overhead on Northwind.",
+          "evidence": "[Page 1] Total $730,000 Assumptions: \u2022 Azure consumption billed at cost, estimated at $3,000/month. \u2022 Coupa data provided as nightly CSV exports by Northwind.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 4,
+          "name": "Security & Compliance",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 8.0,
+          "weighted_points": 16.0,
+          "benchmark": 8.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The vendor meets key baseline security and governance requirements with ISO/IEC 27001 certification, encryption, SAML SSO, and GDPR compliance. Audit logging is supported for one year, although detailed threat monitoring or penetration test results are not detailed.",
+          "evidence": "[Page 1] \u2022 ISO/IEC 27001 certified. Encryption at rest and in transit. SSO via SAML 2.0. \u2022 Role-based access; audit log retained for 1 year. GDPR DPA available.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 5,
+          "name": "Support & Experience",
+          "weight": 10.0,
+          "max_score": 10.0,
+          "score": 6.5,
+          "weighted_points": 6.5,
+          "benchmark": 6.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Foxtrot Analytics demonstrates relevant domain experience with four mid-sized retail implementations and defined business-hours support SLAs. A gap is the absence of 24/7 support for critical issues and the deferral of reference access until after shortlisting.",
+          "evidence": "[Page 2] Support: Business-hours support with 4-hour response for critical incidents; quarterly service reviews. Relevant experience: Four procurement analytics projects for mid-sized retailers since 2021. References: \u2022 Two retail references available after shortlisting.",
+          "evidence_verified": true
+        }
+      ],
+      "final_rank": 3,
+      "tie_break_note": "Ranked above Golf Analytics: PPI, date and rating tie, supplier name ascending.",
+      "source_file": "tiebreak_demo/Foxtrot_Analytics.pdf",
+      "evaluation_status": "ok",
+      "risks": [
+        "Coupa integration dependency on Northwind to generate nightly CSV exports rather than automated direct connector",
+        "Variable Azure consumption costs billed at cost (estimated at $3,000/month) adding approximately $108,000 in unbudgeted risk over three years",
+        "Support coverage is restricted to business hours with up to a 4-hour critical response window, offering no after-hours incident coverage",
+        "Client references are withheld until shortlisting, preventing immediate verification of past performance"
+      ],
+      "overall_summary": "Foxtrot Analytics presents a viable, packaged procurement analytics solution hosted on Azure with standard retail dashboards, ISO 27001 compliance, and transparent core pricing of $730,000. However, the proposal carries integration dependencies via CSV for Coupa, variable cloud hosting fees, business-hours-only support, and deferred customer references.",
+      "warnings": [
+        "Foxtrot Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically. Review for a duplicate or collusive bid."
+      ],
+      "self_correction": null
+    },
+    {
+      "supplier_name": "Golf Analytics",
+      "submission_date": "2026-02-24",
+      "experience_rating": 3.0,
+      "absolute_score": 74.0,
+      "ppi": 100.0,
+      "criteria": [
+        {
+          "criterion_id": 1,
+          "name": "Technical Capability",
+          "weight": 30.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 22.5,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Golf Analytics offers a solid Azure-hosted analytics architecture with packaged dashboards and a certified SAP S/4HANA connector tested up to 10 million spend lines. However, integration for Coupa relies on batch nightly CSV imports rather than a direct API integration.",
+          "evidence": "[Page 1] Hosted analytics platform on Azure with a certified SAP S/4HANA connector and nightly CSV import for Coupa. Tested with 10 million spend lines. Standard spend, supplier and contract dashboards.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 2,
+          "name": "Implementation Plan",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.5,
+          "weighted_points": 15.0,
+          "benchmark": 7.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The proposal provides a structured 16-week timeline across clear phases and a dedicated 5 FTE project team. However, the plan relies on a traditional waterfall approach with limited operational detail on contingency planning.",
+          "evidence": "[Page 1] Delivery follows a waterfall plan with a weekly status report and a monthly steering meeting....Team: Project manager, solution architect, 2 data engineers, BI developer (5 FTE)....Monthly risk review; top risks tracked in a shared register.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 3,
+          "name": "Commercial Value",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 7.0,
+          "weighted_points": 14.0,
+          "benchmark": 7.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The pricing provides a clear fixed-fee breakdown totaling $730,000 across licensing, implementation, connectors, and support over three years. However, total cost is exposed to variable hosting fees estimated at $3,000 per month and places Coupa export operational overhead on Northwind.",
+          "evidence": "[Page 1] Total $730,000 Assumptions: \u2022 Azure consumption billed at cost, estimated at $3,000/month. \u2022 Coupa data provided as nightly CSV exports by Northwind.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 4,
+          "name": "Security & Compliance",
+          "weight": 20.0,
+          "max_score": 10.0,
+          "score": 8.0,
+          "weighted_points": 16.0,
+          "benchmark": 8.0,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "The vendor meets key baseline security and governance requirements with ISO/IEC 27001 certification, encryption, SAML SSO, and GDPR compliance. Audit logging is supported for one year, although detailed threat monitoring or penetration test results are not detailed.",
+          "evidence": "[Page 1] \u2022 ISO/IEC 27001 certified. Encryption at rest and in transit. SSO via SAML 2.0. \u2022 Role-based access; audit log retained for 1 year. GDPR DPA available.",
+          "evidence_verified": true
+        },
+        {
+          "criterion_id": 5,
+          "name": "Support & Experience",
+          "weight": 10.0,
+          "max_score": 10.0,
+          "score": 6.5,
+          "weighted_points": 6.5,
+          "benchmark": 6.5,
+          "gap": 0.0,
+          "relative_pct": 100.0,
+          "justification": "Golf Analytics demonstrates relevant domain experience with four mid-sized retail implementations and defined business-hours support SLAs. A gap is the absence of 24/7 support for critical issues and the deferral of reference access until after shortlisting.",
+          "evidence": "[Page 2] Support: Business-hours support with 4-hour response for critical incidents; quarterly service reviews. Relevant experience: Four procurement analytics projects for mid-sized retailers since 2021. References: \u2022 Two retail references available after shortlisting.",
+          "evidence_verified": true
+        }
+      ],
+      "final_rank": 4,
+      "tie_break_note": "Last place; Foxtrot Analytics ranks above it on PPI, date and rating tie, supplier name ascending.",
+      "source_file": "tiebreak_demo/Golf_Analytics.pdf",
+      "evaluation_status": "ok",
+      "risks": [
+        "Coupa integration dependency on Northwind to generate nightly CSV exports rather than automated direct connector",
+        "Variable Azure consumption costs billed at cost (estimated at $3,000/month) adding approximately $108,000 in unbudgeted risk over three years",
+        "Support coverage is restricted to business hours with up to a 4-hour critical response window, offering no after-hours incident coverage",
+        "Client references are withheld until shortlisting, preventing immediate verification of past performance"
+      ],
+      "overall_summary": "Golf Analytics presents a viable, packaged procurement analytics solution hosted on Azure with standard retail dashboards, ISO 27001 compliance, and transparent core pricing of $730,000. However, the proposal carries integration dependencies via CSV for Coupa, variable cloud hosting fees, business-hours-only support, and deferred customer references.",
+      "warnings": [
+        "Golf Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically. Review for a duplicate or collusive bid."
+      ],
+      "self_correction": null
+    }
+  ],
+  "warnings": [
+    "Echo Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically. Review for a duplicate or collusive bid.",
+    "Foxtrot Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically. Review for a duplicate or collusive bid.",
+    "Golf Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically. Review for a duplicate or collusive bid."
+  ],
+  "steps": [
+    {
+      "step": 1,
+      "tool": "Orchestrator",
+      "detail": "batch RFP-20260927-214557-3343 created with 4 pending supplier entries"
+    },
+    {
+      "step": 2,
+      "tool": "Orchestrator",
+      "detail": "reloaded 5 active criteria (weights total 100%)"
+    },
+    {
+      "step": 3,
+      "tool": "Document Tool",
+      "detail": "Delta Analytics: extracted 2,001 chars from 2 page(s)"
+    },
+    {
+      "step": 4,
+      "tool": "Evaluation Agent",
+      "detail": "Delta Analytics: gemini/gemini-3.8-flash returned a scorecard"
+    },
+    {
+      "step": 5,
+      "tool": "Validation Tool",
+      "detail": "Delta Analytics: 0 issue(s), 5/5 evidence quotes verified"
+    },
+    {
+      "step": 6,
+      "tool": "Document Tool",
+      "detail": "Echo Analytics: extracted 2,000 chars from 2 page(s)"
+    },
+    {
+      "step": 7,
+      "tool": "Orchestrator",
+      "detail": "Echo Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically."
+    },
+    {
+      "step": 8,
+      "tool": "Document Tool",
+      "detail": "Foxtrot Analytics: extracted 2,003 chars from 2 page(s)"
+    },
+    {
+      "step": 9,
+      "tool": "Orchestrator",
+      "detail": "Foxtrot Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically."
+    },
+    {
+      "step": 10,
+      "tool": "Document Tool",
+      "detail": "Golf Analytics: extracted 2,000 chars from 2 page(s)"
+    },
+    {
+      "step": 11,
+      "tool": "Orchestrator",
+      "detail": "Golf Analytics: proposal text is identical to Delta Analytics's (supplier name aside), so the same scorecard was applied - identical documents must score identically."
+    },
+    {
+      "step": 12,
+      "tool": "Ranking Tool",
+      "detail": "absolute scores, benchmarks, gaps, relative %, PPI, tie-breaks and ranks computed"
+    },
+    {
+      "step": 13,
+      "tool": "Orchestrator",
+      "detail": "persisting scored supplier entries + run JSON to SQLite"
+    }
+  ]
+}

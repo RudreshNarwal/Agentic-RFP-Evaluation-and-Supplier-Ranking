@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+data/
+.env
+.streamlit/secrets.toml
+.context/
+.gstack/

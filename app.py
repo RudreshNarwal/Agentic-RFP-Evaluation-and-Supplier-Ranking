@@ -1,0 +1,284 @@
+"""Agentic RFP Evaluation & Supplier Ranking - Streamlit UI. Built by Rudresh."""
+import json
+import os
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+from rfp import db, llm
+from rfp.orchestrator import FORMULAS, check_inputs, run_batch
+from rfp.ranking import TIE_BREAK_ORDER
+
+SAMPLES = Path(__file__).parent / "sample_pdfs"
+# Bundled demo proposals: file -> (supplier, submission date, experience rating 1-5)
+SAMPLE_META = {
+    "Apex_Systems.pdf": ("Apex Systems", "2026-03-02", 4),
+    "BrightPath_Tech.pdf": ("BrightPath Tech", "2026-02-26", 2),
+    "NexaWorks.pdf": ("NexaWorks", "2026-03-02", 4),
+    "Orbit_Digital.pdf": ("Orbit Digital", "2026-02-28", 5),
+    "Scanned_NoText_Supplier.pdf": ("Scanned Supplier (error case)", "2026-03-01", 3),
+}
+# Tie-break demo: identical proposals -> equal PPI, so rule 2 (date), rule 3 (rating) and rule 4 (name) each decide a pair
+TIEBREAK_META = {
+    "tiebreak_demo/Delta_Analytics.pdf": ("Delta Analytics", "2026-02-20", 3),
+    "tiebreak_demo/Echo_Analytics.pdf": ("Echo Analytics", "2026-02-24", 5),
+    "tiebreak_demo/Foxtrot_Analytics.pdf": ("Foxtrot Analytics", "2026-02-24", 3),
+    "tiebreak_demo/Golf_Analytics.pdf": ("Golf Analytics", "2026-02-24", 3),
+}
+
+st.set_page_config(page_title="Agentic RFP Evaluation", page_icon="📑", layout="wide")
+
+
+@st.cache_resource
+def _init():
+    db.init_db()
+    # Streamlit secrets (local .streamlit/secrets.toml or Community Cloud) -> env vars read by rfp.llm
+    try:
+        for k, v in st.secrets.items():
+            if not isinstance(v, dict):
+                os.environ.setdefault(k, str(v))
+    except Exception:  # no secrets file: plain env vars are used
+        pass
+
+
+def _open_past_run():
+    if st.session_state.past_run != "—":
+        st.session_state.run = db.load_run(st.session_state.past_run)
+
+
+_init()
+
+# ---------- sidebar ----------
+with st.sidebar:
+    st.title("📑 Agentic RFP Evaluation")
+    st.caption("Supplier proposals → LLM scorecards → deterministic peer ranking")
+    try:
+        provider, model = llm.config()
+        backend = ""
+        if provider == "gemini":
+            backend = " · Vertex AI" if os.environ.get("GEMINI_USE_VERTEX_AI", "").lower() in ("1", "true", "yes", "on") \
+                else " · AI Studio"
+        st.markdown(f"**LLM:** `{provider}` · `{model}`{backend}")
+        if provider == "mock":
+            st.info("Mock mode: keyword heuristic, no API key. Set `LLM_PROVIDER` for real evaluation.")
+    except ValueError as e:
+        provider = model = None
+        st.error(str(e))
+
+    runs = [r for r in db.list_runs() if r["status"] == "completed"]
+    if runs:
+        st.selectbox("Open a past run", ["—"] + [r["rfp_run_id"] for r in runs], key="past_run",
+                     on_change=_open_past_run)
+    st.divider()
+    st.caption("Built by **Rudresh** · Streamlit + SQLite + any JSON-capable LLM")
+
+run = st.session_state.get("run")
+tabs = st.tabs(["① Criteria", "② Suppliers & Evaluate", "③ Leaderboard", "④ Scorecards", "⑤ Run details"])
+
+# ---------- 1. criteria ----------
+with tabs[0]:
+    active = db.get_criteria()
+    total = sum(c["weight"] for c in active)
+    st.subheader("Active evaluation criteria")
+    c1, c2 = st.columns(2)
+    c1.metric("Active criteria", len(active))
+    c2.metric("Total weight", f"{total:g}%", delta="OK" if abs(total - 100) < 1e-6 else "must be 100%",
+              delta_color="normal" if abs(total - 100) < 1e-6 else "inverse", delta_arrow="off")
+    st.dataframe(pd.DataFrame(active)[["criterion_id", "name", "description", "weight", "max_score"]] if active else
+                 pd.DataFrame(), hide_index=True, width="stretch",
+                 column_config={"weight": st.column_config.NumberColumn("weight (%)", format="%g"),
+                                "max_score": st.column_config.NumberColumn(format="%g")})
+
+    with st.expander("Edit criteria (activate / deactivate / change weights)"):
+        edited = st.data_editor(
+            pd.DataFrame(db.get_criteria(active_only=False)), hide_index=True, width="stretch", num_rows="fixed",
+            disabled=["criterion_id"], key="criteria_editor",
+            column_config={"is_active": st.column_config.CheckboxColumn("active"),
+                           "weight": st.column_config.NumberColumn("weight (%)", min_value=0, max_value=100),
+                           "max_score": st.column_config.NumberColumn(min_value=1)})
+        new_total = edited.loc[edited["is_active"].astype(bool), "weight"].sum()
+        st.caption(f"Active weight total after edit: **{new_total:g}%**")
+        if st.button("Save criteria"):
+            if abs(new_total - 100) > 1e-6:
+                st.error(f"Active weights total {new_total:g}%. They must total exactly 100% - not saved.")
+            else:
+                db.save_criteria(edited.to_dict("records"))
+                st.success("Criteria saved. New runs will use them.")
+                st.rerun()
+
+# ---------- 2. supplier input ----------
+with tabs[1]:
+    st.subheader("Supplier proposals")
+    use_samples = st.toggle("Use the bundled sample proposals (4 suppliers + 1 scanned error case)")
+    use_twins = st.toggle("Use the tie-break demo pack (4 identical proposals: equal PPI, so rules 2-4 decide)")
+    uploads = st.file_uploader("Upload supplier RFP responses (PDF)", type=["pdf"], accept_multiple_files=True)
+
+    files = [(f.name, f.getvalue()) for f in uploads or []]
+    for on, meta in ((use_samples, SAMPLE_META), (use_twins, TIEBREAK_META)):
+        if on:
+            files += [(n, (SAMPLES / n).read_bytes()) for n in meta if (SAMPLES / n).exists()]
+
+    submissions = []
+    if files:
+        st.markdown("**Supplier metadata**")
+        h = st.columns([3, 3, 2, 2])
+        for col, label in zip(h, ["File", "Supplier name", "Submission date", "Experience (1-5)"]):
+            col.caption(label)
+        for i, (fname, data) in enumerate(files):
+            name0, date0, rating0 = {**SAMPLE_META, **TIEBREAK_META}.get(
+                fname, (Path(fname).stem.replace("_", " "), str(date.today()), 3))
+            c = st.columns([3, 3, 2, 2])
+            c[0].markdown(f"`{fname}`  \n{len(data) / 1024:.0f} KB")
+            name = c[1].text_input("Supplier name", name0, key=f"name{i}{fname}", label_visibility="collapsed")
+            sdate = c[2].date_input("Submission date", date.fromisoformat(date0), key=f"date{i}{fname}",
+                                    label_visibility="collapsed")
+            rating = c[3].slider("Experience rating", 1, 5, rating0, key=f"rate{i}{fname}", label_visibility="collapsed")
+            submissions.append({"supplier_name": name, "submission_date": sdate.isoformat(),
+                                "experience_rating": rating, "pdf_bytes": data, "filename": fname})
+
+    errors = check_inputs(submissions, db.get_criteria())
+    if not submissions:
+        st.info("Upload two or more supplier PDFs, or switch on the bundled samples above.")
+    else:
+        for e in errors:
+            st.error(e)
+    if len(submissions) == 1:
+        st.warning("Only one supplier: peer benchmarks will simply compare it with itself.")
+    if provider is None:
+        st.error("Fix the LLM configuration (sidebar) before evaluating.")
+
+    if st.button("🚀 Evaluate suppliers", type="primary", disabled=bool(errors) or provider is None):
+        with st.status(f"Running agentic workflow with {provider}/{model}…", expanded=True) as status:
+            try:
+                run = run_batch(submissions, provider=provider, model=model, on_progress=status.write)
+                st.session_state.run = run
+                status.update(label=f"Completed {run['rfp_run_id']} · {len(run['warnings'])} warning(s)",
+                              state="complete", expanded=False)
+            except Exception as e:
+                status.update(label="Run failed", state="error")
+                st.error(f"{type(e).__name__}: {e}")
+        if st.session_state.get("run"):
+            st.success("Done - open the **Leaderboard**, **Scorecards** and **Run details** tabs.")
+
+
+def _md(text):
+    """LLM/PDF text into markdown: escape $ so prices like '$410,000 ... $60,000' don't render as LaTeX."""
+    return str(text).replace("$", "\\$")
+
+
+def _badge(verified):
+    return {True: "✅ verified", False: "⚠️ not found in PDF"}.get(verified, "—")
+
+
+def _verified(s):
+    return f"{sum(bool(c.get('evidence_verified')) for c in s['criteria'])}/{len(s['criteria'])}"
+
+
+def _need_run():
+    st.info("No run yet. Evaluate suppliers in tab ②, or open a past run from the sidebar.")
+
+
+# ---------- 3. leaderboard ----------
+with tabs[2]:
+    if not run:
+        _need_run()
+    else:
+        sup = run["suppliers"]
+        st.subheader(f"Leaderboard · {run['rfp_run_id']}")
+        top = sup[0]
+        m = st.columns(3)
+        m[0].metric("🏆 Rank 1", top["supplier_name"])
+        m[1].metric("PPI", f"{top['ppi']:.2f}")
+        m[2].metric("Absolute score", f"{top['absolute_score']:.2f} / 100")
+        board = pd.DataFrame([{
+            "Rank": s["final_rank"], "Supplier": s["supplier_name"],
+            "": "⚠️" if s.get("evaluation_status") == "failed" else "✅", "Absolute score": s["absolute_score"],
+            "PPI": s["ppi"], "Submission date": s["submission_date"], "Experience rating": s["experience_rating"],
+            "Evidence ✓": _verified(s), "Warnings": len(s["warnings"]),
+            "Why this position": s["tie_break_note"]} for s in sup])
+        st.dataframe(board, hide_index=True, width="stretch", column_config={
+            "Absolute score": st.column_config.ProgressColumn(format="%.2f", min_value=0, max_value=100),
+            "PPI": st.column_config.ProgressColumn(format="%.2f", min_value=0, max_value=100)})
+
+        st.markdown("**Criterion comparison** - score (relative % of best) per supplier")
+        comp = pd.DataFrame({s["supplier_name"]: {f"{c['name']} ({c['weight']:g}%)":
+                             f"{c['score']:g}/{c['max_score']:g} ({c['relative_pct']:.0f}%)" for c in s["criteria"]}
+                             for s in sup})
+        comp["Benchmark"] = [f"{c['benchmark']:g}" for c in sup[0]["criteria"]]
+        st.dataframe(comp, width="stretch")
+        st.bar_chart(board.set_index("Supplier")[["PPI", "Absolute score"]], stack=False, horizontal=True, sort=False)
+
+# ---------- 4. scorecards ----------
+with tabs[3]:
+    if not run:
+        _need_run()
+    else:
+        names = [s["supplier_name"] for s in run["suppliers"]]
+        s = run["suppliers"][names.index(st.selectbox("Supplier", names))]
+        m = st.columns(4)
+        m[0].metric("Rank", s["final_rank"])
+        m[1].metric("Absolute score", f"{s['absolute_score']:.2f}")
+        m[2].metric("PPI", f"{s['ppi']:.2f}")
+        m[3].metric("Warnings", len(s["warnings"]))
+        if s.get("evaluation_status") == "failed":
+            st.error("This supplier could not be evaluated (see warnings); it is scored 0 on every criterion.")
+        if s.get("self_correction"):
+            sc = s["self_correction"]
+            st.info(f"🔁 Self-correction: the validator found {len(sc['issues_before'])} issue(s); the Evaluation Agent "
+                    f"re-answered with {len(sc['issues_after'])} issue(s) - "
+                    f"{'corrected answer used' if sc['accepted'] else 'first answer kept'}.")
+        if s["overall_summary"]:
+            st.markdown(f"> {_md(s['overall_summary'])}")
+        st.dataframe(pd.DataFrame([{
+            "Criterion": c["name"], "Weight %": c["weight"], "Score": f"{c['score']:g} / {c['max_score']:g}",
+            "Weighted points": c["weighted_points"], "Benchmark": c["benchmark"], "Gap": c["gap"],
+            "Relative %": c["relative_pct"], "Evidence": _badge(c.get("evidence_verified"))} for c in s["criteria"]]),
+            hide_index=True, width="stretch",
+            column_config={"Relative %": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100)})
+        st.markdown("**Evidence & justification**")
+        for c in s["criteria"]:
+            with st.expander(f"{_badge(c.get('evidence_verified'))} {c['name']} - {c['score']:g}/{c['max_score']:g}  "
+                             f"(gap {c['gap']:+g} vs benchmark {c['benchmark']:g})"):
+                st.markdown(f"**Justification:** {_md(c['justification']) or '—'}")
+                st.markdown("**Evidence:**\n\n" + (f"> {_md(c['evidence'])}" if c["evidence"] else "_No evidence quoted._"))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Risks identified**")
+            for r in s["risks"] or ["None reported."]:
+                st.markdown(f"- {_md(r)}")
+        with c2:
+            st.markdown("**Validation warnings**")
+            for w in s["warnings"] or ["None."]:
+                st.markdown(f"- {_md(w)}")
+
+# ---------- 5. run details ----------
+with tabs[4]:
+    if not run:
+        _need_run()
+    else:
+        st.subheader(f"RFP_RUN_ID: `{run['rfp_run_id']}`")
+        st.markdown(f"**Status:** {run['status']} · **Created:** {run['created_at'].replace('T', ' ')} · "
+                    f"**LLM:** `{run['llm']['provider']}` / `{run['llm']['model']}` · **Suppliers:** {len(run['suppliers'])}")
+        st.download_button("⬇️ Download complete result (JSON)", json.dumps(run, indent=2),
+                           file_name=f"{run['rfp_run_id']}.json", mime="application/json", type="primary")
+
+        st.markdown("**Warnings**")
+        if run["warnings"]:
+            for w in run["warnings"]:
+                st.warning(_md(w))
+        else:
+            st.success("No validation warnings - every LLM scorecard was complete and in range.")
+
+        st.markdown("**Tie-break explanation** - order: " + " → ".join(TIE_BREAK_ORDER))
+        st.dataframe(pd.DataFrame([{"Rank": s["final_rank"], "Supplier": s["supplier_name"], "PPI": s["ppi"],
+                                    "Submission date": s["submission_date"], "Experience": s["experience_rating"],
+                                    "Explanation": s["tie_break_note"]} for s in run["suppliers"]]),
+                     hide_index=True, width="stretch", column_config={"PPI": st.column_config.NumberColumn(format="%.4f")})
+        st.markdown("**Orchestrator step log** - every tool call, in order")
+        st.dataframe(pd.DataFrame(run["steps"]), hide_index=True, width="stretch")
+        st.markdown("**Formulas (deterministic Python)**")
+        st.dataframe(pd.DataFrame(FORMULAS.items(), columns=["Metric", "Formula"]), hide_index=True, width="stretch")
+        with st.expander("Raw JSON"):
+            st.json(run, expanded=False)
