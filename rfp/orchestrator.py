@@ -60,9 +60,14 @@ def _extract(sub):
     return text, [], log
 
 
+def _name_re(name):
+    """Whole-word match of a supplier name ("Nova" must not match inside "innovative")."""
+    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.I)
+
+
 def _fingerprint(text, name):
     """Document identity with the supplier's own name masked, so identical proposals match across suppliers."""
-    masked = re.sub(re.escape(name), "<SUPPLIER>", text, flags=re.I)
+    masked = _name_re(name).sub("<SUPPLIER>", text)
     return hashlib.sha256(" ".join(masked.split()).encode()).hexdigest()
 
 
@@ -81,12 +86,14 @@ def _evaluate_doc(name, text, criteria, provider, model):
     log.append(("Validation Tool", f"{name}: {len(warnings)} issue(s), "
                 f"{sum(bool(c['evidence_verified']) for c in card['criteria'])}/{len(criteria)} evidence quotes verified"))
 
-    if raw is not None and warnings and provider != "mock":
+    fixable = [w for w in warnings if "has no evidence quote" not in w]  # "" evidence is allowed by the prompt
+    if raw is not None and fixable and provider != "mock":
         # Agentic self-correction: feed the validator's findings back to the Evaluation Agent once.
         try:
-            raw2 = evaluation_agent.repair(text, criteria, name, raw, warnings, provider, model)
+            raw2 = evaluation_agent.repair(text, criteria, name, raw, fixable, provider, model)
             card2, warnings2 = normalize(raw2, criteria, name, doc_text=text)
-            repair = {"issues_before": warnings, "issues_after": warnings2, "accepted": len(warnings2) <= len(warnings)}
+            repair = {"issues_before": warnings, "issues_after": warnings2,
+                      "accepted": _quality(card2, warnings2) > _quality(card, warnings)}
             if repair["accepted"]:
                 card, warnings = card2, warnings2
             log.append(("Evaluation Agent", f"{name}: self-correction {len(repair['issues_before'])} -> "
@@ -96,9 +103,14 @@ def _evaluate_doc(name, text, criteria, provider, model):
     return {"card": card, "warnings": notes + warnings, "log": log, "repair": repair, "failed": raw is None}
 
 
+def _quality(card, warnings):
+    """Compare scorecards on substance: criteria validly answered, then verified quotes, then fewest issues."""
+    return card["answered"], sum(bool(c["evidence_verified"]) for c in card["criteria"]), -len(warnings)
+
+
 def _share_scorecard(original, from_name, to_name, text, criteria):
     """Reuse a scorecard for an identical document: swap the supplier name, re-check evidence against this PDF."""
-    swap = lambda v: re.sub(re.escape(from_name), to_name, v, flags=re.I)
+    swap = lambda v: _name_re(from_name).sub(to_name, v)
     raw = {"criteria": [{**c, "justification": swap(c["justification"]), "evidence": swap(c["evidence"])}
                         for c in original["card"]["criteria"]],
            "risks": [swap(r) for r in original["card"]["risks"]], "overall_summary": swap(original["card"]["overall_summary"])}

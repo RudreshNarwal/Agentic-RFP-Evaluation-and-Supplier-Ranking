@@ -135,3 +135,58 @@ def test_identical_proposals_share_one_scorecard_and_tie_breaks_2_to_4_decide(db
     assert "supplier name" in sup[2]["tie_break_note"]
     assert sum("identical to" in w for w in run["warnings"]) == 3
     assert all(c["evidence_verified"] for s in sup for c in s["criteria"] if c["evidence"])  # re-checked per PDF
+
+
+def _fake_llm(first, second):
+    import json
+    def fake(system, prompt, schema, provider, model):
+        return json.dumps(second) if "automated validator" in prompt else (first if isinstance(first, str) else json.dumps(first))
+    return fake
+
+
+GOOD = "[Page 1] NexaWorks proposes a balanced, low-risk delivery"
+
+
+def test_repair_of_invalid_json_is_accepted_even_with_some_unverified_quotes(dbp, monkeypatch):
+    crit = db.get_criteria(dbp)
+    repaired = {"criteria": [{"criterion_id": c["criterion_id"], "score": 6, "max_score": 10, "justification": "j",
+                              "evidence": GOOD if c["criterion_id"] > 2 else "invented words that are not there"}
+                             for c in crit], "risks": [], "overall_summary": "s"}
+    monkeypatch.setattr("rfp.llm.complete_json", _fake_llm("not json at all {", repaired))
+    s = run_batch(subs()[2:3], db_path=dbp, provider="gemini", model="x")["suppliers"][0]
+    assert s["self_correction"]["accepted"] and all(c["score"] == 6 for c in s["criteria"])
+
+
+def test_worse_repair_that_drops_a_criterion_is_rejected(dbp, monkeypatch):
+    crit = db.get_criteria(dbp)
+    first = {"criteria": [{"criterion_id": c["criterion_id"], "score": 9, "max_score": 10, "justification": "j",
+                           "evidence": GOOD if c["criterion_id"] > 1 else "made up claim about quantum synergy"}
+                          for c in crit], "risks": [], "overall_summary": "s"}
+    worse = {**first, "criteria": [c for c in first["criteria"] if c["criterion_id"] != 1]}
+    monkeypatch.setattr("rfp.llm.complete_json", _fake_llm(first, worse))
+    s = run_batch(subs()[2:3], db_path=dbp, provider="gemini", model="x")["suppliers"][0]
+    assert not s["self_correction"]["accepted"] and all(c["score"] == 9 for c in s["criteria"])
+
+
+def test_blank_evidence_alone_does_not_trigger_a_repair_call(dbp, monkeypatch):
+    crit = db.get_criteria(dbp)
+    answer = {"criteria": [{"criterion_id": c["criterion_id"], "score": 2, "max_score": 10, "justification": "not covered",
+                            "evidence": ""} for c in crit], "risks": [], "overall_summary": "s"}
+    calls = []
+    monkeypatch.setattr("rfp.llm.complete_json", lambda *a, **k: (calls.append(1), __import__("json").dumps(answer))[1])
+    run_batch(subs()[2:3], db_path=dbp, provider="gemini", model="x")
+    assert len(calls) == 1
+
+
+def test_failed_supplier_rows_are_marked_failed_in_sqlite(dbp):
+    bad = [{"supplier_name": "Scanned Co", "submission_date": "2026-03-01", "experience_rating": 3, "filename": "s.pdf",
+            "pdf_bytes": (PDFS / "Scanned_NoText_Supplier.pdf").read_bytes()}]
+    run = run_batch(subs(bad), db_path=dbp, provider="mock", model="m")
+    status = {r["supplier_name"]: r["status"] for r in db.get_supplier_rows(run["rfp_run_id"], dbp)}
+    assert status["Scanned Co"] == "failed" and status["NexaWorks"] == "scored"
+
+
+def test_name_masking_is_whole_word():
+    from rfp.orchestrator import _fingerprint
+    body = "An innovative platform. {} Proposal."
+    assert _fingerprint(body.format("Nova"), "Nova") == _fingerprint(body.format("Apex"), "Apex")

@@ -91,3 +91,14 @@ def test_evidence_grounding_accepts_real_quotes_and_flags_invented_ones():
     assert verified == {1: True, 2: False}
     assert card["scores"] == {1: 8.0, 2: 6.0}  # grounding warns, it doesn't silently change the LLM's judgment
     assert any("criterion 2" in w and "not found in the document" in w for w in warnings)
+
+
+def test_wrong_page_tag_or_missing_page_is_not_verified():
+    ok = "[Page 1] We hold ISO/IEC 27001:2022 certification and"
+    wrong_page = "[Page 2] We hold ISO/IEC 27001:2022 certification and"
+    no_such_page = "[Page 9] 27001 certified and"
+    raw = {"criteria": [item(1, 8, evidence=ok), item(2, 6, evidence=wrong_page)]}
+    card, _ = normalize(raw, CRITERIA, "S", doc_text=DOC)
+    assert [c["evidence_verified"] for c in card["criteria"]] == [True, False]
+    card, _ = normalize({"criteria": [item(1, 8, evidence=no_such_page), item(2, 6)]}, CRITERIA, "S", doc_text=DOC)
+    assert card["criteria"][0]["evidence_verified"] is False

@@ -109,10 +109,10 @@ def complete_run(run, path=None):
     """Step 9: fill in every supplier entry and the full run JSON in one transaction."""
     with connect(path) as conn:
         conn.executemany(
-            "UPDATE supplier_results SET status='scored', absolute_score=?, ppi=?, final_rank=?, result_json=?"
+            "UPDATE supplier_results SET status=?, absolute_score=?, ppi=?, final_rank=?, result_json=?"
             " WHERE rfp_run_id=? AND supplier_name=?",
-            [(s["absolute_score"], s["ppi"], s["final_rank"], json.dumps(s), run["rfp_run_id"], s["supplier_name"])
-             for s in run["suppliers"]])
+            [("failed" if s.get("evaluation_status") == "failed" else "scored", s["absolute_score"], s["ppi"],
+              s["final_rank"], json.dumps(s), run["rfp_run_id"], s["supplier_name"]) for s in run["suppliers"]])
         conn.execute("UPDATE rfp_runs SET status='completed', warnings_json=?, run_json=? WHERE rfp_run_id=?",
                      (json.dumps(run["warnings"]), json.dumps(run), run["rfp_run_id"]))
 

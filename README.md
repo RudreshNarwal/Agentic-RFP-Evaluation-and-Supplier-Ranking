@@ -41,9 +41,9 @@ flowchart LR
 | Orchestrator Agent | `rfp/orchestrator.py` | Validates inputs; creates the batch (`RFP_RUN_ID`) and one `pending` supplier entry each; reloads criteria and re-checks that the weights total 100%; calls the tools in order; evaluates distinct documents in parallel; logs every tool call; persists the run or marks it `failed`. |
 | Document Tool | `rfp/document_tool.py` | Extracts clean, `[Page N]`-tagged text (PyMuPDF, ligatures expanded). Scanned or corrupt PDFs become warnings. |
 | Consistency guard | `rfp/orchestrator.py` (`_fingerprint`) | Hashes each document with the supplier's own name masked. Identical proposals are evaluated **once** and share the scorecard, because LLMs are not deterministic even at temperature 0. The duplicates are flagged as a possible duplicate or collusive bid. |
-| Evaluation Agent | `rfp/evaluation_agent.py` | Builds the prompt from the **active DB criteria** (nothing hard-coded) and asks for one JSON result per criterion, with verbatim, page-tagged evidence. **Self-correction:** if the Validation Tool reports issues, the agent is re-prompted once with exactly those issues, and the answer with fewer issues is kept. |
+| Evaluation Agent | `rfp/evaluation_agent.py` | Builds the prompt from the **active DB criteria** (nothing hard-coded) and asks for one JSON result per criterion, with verbatim, page-tagged evidence. **Self-correction:** if the Validation Tool reports fixable issues, the agent is re-prompted once with exactly those issues. The repair is kept only if it is better on substance: more criteria validly answered, then more verified quotes, then fewer issues. |
 | LLM adapters | `rfp/llm.py` | Gemini (AI Studio, or Vertex AI via `GEMINI_USE_VERTEX_AI`), Anthropic, OpenAI and OpenRouter, with **schema-enforced JSON** where the provider supports it. There is also a keyless mock for tests. |
-| Validation Tool | `rfp/validation.py` | Pydantic schema checks. Fills missing criteria, clips out-of-range scores, and drops unknown or duplicate IDs. Takes `max_score` from the DB, never from the LLM. **Evidence grounding:** checks that every quote actually appears in the PDF. Every fix is recorded as a warning. |
+| Validation Tool | `rfp/validation.py` | Pydantic schema checks. Fills missing criteria, clips out-of-range scores, and drops unknown or duplicate IDs. Takes `max_score` from the DB, never from the LLM. **Evidence grounding:** checks that every quote actually appears in the PDF, on the page it cites. Every fix is recorded as a warning. |
 | Ranking Tool | `rfp/ranking.py` | Pure, deterministic Python: all formulas, peer benchmarks, tie-breaks, ranks and "why this position" explanations. |
 | Persistence | `rfp/db.py` | Schema, criteria CRUD, run and supplier results. |
 
@@ -69,9 +69,9 @@ criteria, extract, consistency guard, prompt, LLM) → **5 Validate** (schema + 
 (case-insensitive). Ranks 1, 2, 3… are assigned only after this sort. PPI is rounded to 4 decimals *before* comparing, so
 float noise can't break a genuine tie. Every supplier gets a plain-English note naming the rule that placed it.
 
-**Worked example** (`sample_output/run_example_gemini.json`, Apex Systems): scores 9.5, 9, 8.5, 9.5, 7.5 out of 10 with
-weights 30/20/20/20/10 give absolute = 28.5 + 18 + 17 + 19 + 7.5 = **90.0**. The benchmarks are 9.5, 9, 8.5, 9.5, 9.5, so the relative %
-values are 100, 100, 100, 100, 78.95 and PPI = (100·90 + 78.95·10) / 100 = **97.89**.
+**Worked example** (`sample_output/run_example_gemini.json`, Apex Systems): scores 9.5, 9, 8.5, 9.5, 8 out of 10 with
+weights 30/20/20/20/10 give absolute = 28.5 + 18 + 17 + 19 + 8 = **90.5**. The benchmarks are 9.5, 9.5, 8.5, 9.5, 9.5, so the
+relative % values are 100, 94.74, 100, 100, 84.21 and PPI = (100·30 + 94.74·20 + 100·20 + 100·20 + 84.21·10) / 100 = **97.37**.
 
 **Tie-break demo** (`sample_output/run_tiebreak_demo_gemini.json`): four identical proposals get PPI 100 each.
 Rule 2 puts Delta (submitted 20 Feb) above Echo (24 Feb). Rule 3 puts Echo (rating 5) above Foxtrot (rating 3). Rule 4 puts
@@ -87,8 +87,8 @@ Foxtrot above Golf (alphabetical).
 | `rfp_runs` | rfp_run_id, created_at, status (`running` / `completed` / `failed`), llm_provider, llm_model, warnings_json, run_json |
 | `supplier_results` | rfp_run_id (FK), supplier_name, submission_date, experience_rating, source_file, status (`pending` / `scored` / `failed`), absolute_score, ppi, final_rank, result_json |
 
-Supplier entries are created as `pending` at step 3, filled in and set to `scored` at step 9, or set to `failed` if the run
-crashes. Foreign keys are enforced. The seeded criteria are Technical Capability 30%, Implementation Plan 20%, Commercial
+Supplier entries are created as `pending` at step 3, filled in and set to `scored` at step 9, or set to `failed` if that
+supplier couldn't be evaluated (or the whole run crashed). Foreign keys are enforced. The seeded criteria are Technical Capability 30%, Implementation Plan 20%, Commercial
 Value 20%, Security & Compliance 20% and Support & Experience 10%, all with max score 10. You can edit them in the
 **Criteria** tab; saving is refused unless the active weights total 100%, and the prompt picks up the change automatically.
 
@@ -129,10 +129,10 @@ reproducibility comes from the consistency guard and from storing every validate
 pytest -q
 ```
 
-29 tests, covering:
+35 tests, covering:
 - **Ranking:** hand-computed scores, benchmarks and PPI; zero-benchmark handling; every tie-break level; case-insensitive names; float-noise ties; order independence.
-- **Validation:** malformed and fenced JSON; missing, unknown and duplicate criteria; non-numeric, out-of-range and `null` fields; missing evidence; evidence grounding (real quotes accepted, invented ones flagged).
-- **Pipeline:** determinism; step-3 entries marked `failed` on a crash; the self-correction loop fixing a bad first answer; identical proposals sharing one scorecard so rules 2–4 decide; scanned and corrupt PDFs; LLM outage; invalid inputs and non-ISO dates rejected before a run is created.
+- **Validation:** malformed and fenced JSON; missing, unknown and duplicate criteria; non-numeric, out-of-range and `null` fields; missing evidence; evidence grounding (real quotes accepted; invented quotes and wrong `[Page N]` tags flagged).
+- **Pipeline:** determinism; step-3 entries marked `failed` on a crash and failed suppliers stored as `failed`; the self-correction loop (a fixed answer is accepted, a worse one rejected, a repair of invalid JSON kept, blank evidence alone never triggers a repair); whole-word name masking; identical proposals sharing one scorecard so rules 2–4 decide; scanned and corrupt PDFs; LLM outage; invalid inputs and non-ISO dates rejected before a run is created.
 - **UI:** a Streamlit `AppTest` run of the full flow.
 
 ---
@@ -146,9 +146,9 @@ security/compliance/risk, and support/experience/references.
 | Supplier | Profile | Real Gemini result |
 |---|---|---|
 | Apex Systems | Strong technical design and security (ISO 27001, SOC 2 Type II); highest price ($1.34M); moderate 20-week plan | Rank 1 · Tech 9.5, Security 9.5 |
-| NexaWorks | Balanced ($895K); strongest implementation plan (RACI, risk register) and 24x7 SLA support | Rank 2 · Support 9.5 (best) |
+| NexaWorks | Balanced ($895K); strongest implementation plan (RACI, risk register) and 24x7 SLA support | Rank 2 · Implementation 9.5, Support 9.5 (both best) |
 | Orbit Digital | 40+ deployments and named references; integration "to be finalised"; medium, estimated price ($965K) | Rank 3 · Tech 5 (vague integration) |
-| BrightPath Tech | Lowest price ($370K), fastest (12 weeks); vague compliance, no risk plan, founded 2024 | Rank 4 · Security 3 |
+| BrightPath Tech | Lowest price ($370K), fastest (12 weeks); vague compliance, no risk plan, founded 2024 | Rank 4 · Security 2 |
 | `Scanned_NoText_Supplier.pdf` | Image-only PDF, the **error case** | Warning, scored 0, ranked last |
 | `tiebreak_demo/*` | Four **identical** proposals from four names | Shared scorecard; tie-break rules 2, 3 and 4 decide |
 
@@ -211,6 +211,6 @@ seed_db.py                DB creation + seed script
 generate_sample_pdfs.py   synthetic supplier PDFs
 sample_pdfs/              4 proposals + scanned error case + tiebreak_demo/
 sample_output/            exported run JSON (real Gemini runs)
-tests/                    pytest suite (29 tests)
+tests/                    pytest suite (35 tests)
 docs/screenshots/         README images
 ```

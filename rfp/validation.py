@@ -38,8 +38,14 @@ def _plain(s):
 
 
 def evidence_in_document(evidence, doc_text):
-    """True if every quoted fragment (split on ... or …) of 3+ words appears verbatim in the document."""
-    doc = _plain(doc_text)
+    """True if every quoted fragment (split on ... or …) of 3+ words appears verbatim in the document, and on the
+    cited page(s) when the quote carries [Page N] tags."""
+    parts = re.split(r"\[Page (\d+)\]", doc_text)  # ['', '1', text1, '2', text2, ...]
+    pages = {int(n): t for n, t in zip(parts[1::2], parts[2::2])}
+    cited = [int(n) for n in re.findall(r"\[Page (\d+)\]", evidence, re.I)]
+    if cited and any(p not in pages for p in cited):
+        return False
+    doc = _plain(" ".join(pages[p] for p in cited) if cited else doc_text)
     fragments = [_plain(f) for f in re.split(r"\.\.\.|…", evidence)]
     fragments = [f for f in fragments if len(f.split()) >= 3]
     return bool(fragments) and all(f in doc for f in fragments)
@@ -61,7 +67,7 @@ def normalize(raw, criteria, supplier_name, doc_text=None):
     items = items if isinstance(items, list) else []
 
     by_id = {c["criterion_id"]: c for c in criteria}
-    got = {}
+    got, invalid = {}, set()
     for it in items:
         try:
             r = CriterionResult.model_validate(it)
@@ -76,6 +82,7 @@ def normalize(raw, criteria, supplier_name, doc_text=None):
                 continue
             if cid in by_id and cid not in got:
                 warn(f"criterion {cid} had invalid score {it.get('score')!r}; set to 0.")
+                invalid.add(cid)
                 got[cid] = CriterionResult(criterion_id=cid, score=0, justification=str(it.get("justification") or ""),
                                            evidence=str(it.get("evidence") or ""))
             continue
@@ -120,4 +127,5 @@ def normalize(raw, criteria, supplier_name, doc_text=None):
         "scores": {l["criterion_id"]: l["score"] for l in lines},
         "risks": risks,
         "overall_summary": str(data.get("overall_summary") or ""),
+        "answered": sum(1 for cid in got if cid not in invalid),  # criteria with a valid LLM score
     }, warnings
