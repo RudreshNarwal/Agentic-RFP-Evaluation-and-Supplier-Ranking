@@ -4,6 +4,7 @@
 **Stack:** Streamlit · SQLite · any JSON-capable LLM (Gemini via AI Studio or Vertex AI, Anthropic, OpenAI, OpenRouter, or a keyless mock)
 **Live app:** `https://<your-app>.streamlit.app` (replace after deploying, see [Deploy](#deploy-to-streamlit-community-cloud))
 **Source:** https://github.com/RudreshNarwal/Agentic-RFP-Evaluation-and-Supplier-Ranking
+**Demo video:** `<add link>` (one successful run + validation/error cases, see [Demo video](#demo-video))
 
 The app reads supplier RFP proposals (PDF). An LLM agent scores each proposal against criteria stored in SQLite and quotes
 evidence, and the quotes are **verified against the PDF text**. **Deterministic Python** then validates the scorecards,
@@ -50,7 +51,7 @@ flowchart LR
 ### Data flow (brief section 4)
 1 Setup → 2 Input → **3 Batch** (`RFP-YYYYMMDD-HHMMSS-xxxx` + a `pending` supplier entry each) → **4 Evaluate** (reload
 criteria, extract, consistency guard, prompt, LLM) → **5 Validate** (schema + grounding, one self-correction round) →
-6 Score → 7 Benchmark → 8 Rank → **9 Persist** (entries become `scored` and the run JSON is saved, in one transaction) →
+6 Score → 7 Benchmark → 8 Rank → **9 Persist** (entries become `scored` or `failed` and the run JSON is saved, in one transaction) →
 10 Present + JSON download.
 
 ---
@@ -191,8 +192,10 @@ Sample exported JSON (real Gemini runs): [`run_example_gemini.json`](sample_outp
 
 ## Deploy to Streamlit Community Cloud
 
-1. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub, and click **Create app** → **Deploy a public app from GitHub**.
-2. Repository `RudreshNarwal/Agentic-RFP-Evaluation-and-Supplier-Ranking`, branch `main`, main file `app.py`. Pick a custom subdomain.
+1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub. The repository is **private**, so grant
+   Streamlit access to private repositories when asked.
+2. Click **Create app** → deploy from GitHub: repository `RudreshNarwal/Agentic-RFP-Evaluation-and-Supplier-Ranking`,
+   branch `main`, main file `app.py`. Pick a custom subdomain.
 3. **Advanced settings** → Python **3.12** → Secrets:
    ```toml
    LLM_PROVIDER = "gemini"
@@ -200,7 +203,40 @@ Sample exported JSON (real Gemini runs): [`run_example_gemini.json`](sample_outp
    GEMINI_USE_VERTEX_AI = false
    GOOGLE_API_KEY = "your-key"
    ```
-4. Click **Deploy**, then replace the live-app placeholder at the top of this README with the URL.
+4. Click **Deploy**. An app from a private repository starts out private, so open **Share** and make it **public** so graders can open it.
+5. Replace the live-app placeholder at the top of this README with the URL.
+
+## Demo video
+
+Record the live app (about 3–4 minutes):
+
+1. **Criteria:** show the 5 criteria totalling 100%. Set a weight to 40 and click **Save** to show the "must total 100%" error, then undo.
+2. **Input + validation error:** load the 4 proposals and the scanned PDF, rename one supplier to a duplicate to show the error and the disabled button, then fix it.
+3. **Successful run:** click **Evaluate** and let the progress messages show each tool running.
+4. **Leaderboard:** ranks, absolute score, PPI, criterion comparison. The scanned supplier is ⚠️ last (the error case).
+5. **Scorecard:** benchmarks, gaps and ✅ verified evidence, then the flagged scanned supplier.
+6. **Run details:** `RFP_RUN_ID`, warnings, tie-break explanations, step log and formulas; download the JSON.
+7. **Tie-break demo (optional):** run the tie-break pack and show rules 2, 3 and 4 each deciding one place.
+
+## Submission checklist (brief section 10)
+
+| Item | Where |
+|---|---|
+| Source code, folder structure, `requirements.txt` | This repository ([project structure](#project-structure)) |
+| SQLite creation/seed script with sample criteria | `seed_db.py` (schema and seed in `rfp/db.py`) |
+| At least four synthetic supplier PDFs | `sample_pdfs/` (4 proposals + scanned error case + tie-break pack), made by `generate_sample_pdfs.py` |
+| Deployed app on Streamlit Community Cloud | Live-app link at the top |
+| README: setup, architecture, formulas, assumptions, screenshots | This file |
+| Sample exported JSON for one completed run | `sample_output/run_example_gemini.json` (+ `run_tiebreak_demo_gemini.json`) |
+| Short demo: one successful run + validation/error case | Demo-video link at the top |
+
+## Known limitations
+
+- LLM judgments vary between calls, even at temperature 0. Two runs on the same proposals give slightly different scores (the ranking in the sample runs stayed the same). Every run stores the exact validated scorecards it used, so its results can always be traced and reproduced.
+- The self-correction round is covered by tests but didn't trigger in the live sample runs, because Gemini's first answers had no validation issues.
+- The consistency guard gives identical proposals a single shared evaluation, rather than examining each copy independently. This is deliberate and each shared scorecard is flagged with a warning.
+- Evidence grounding checks that quotes exist on the cited page, not that they support the score. That judgment stays with the LLM, and the justification is shown next to each score.
+- Mock mode is a keyword heuristic for offline use and tests only; its scores and evidence are not meaningful.
 
 ## Project structure
 
