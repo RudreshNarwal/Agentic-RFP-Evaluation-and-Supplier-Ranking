@@ -197,7 +197,7 @@ Sample exported JSON from a real Gemini run: [`sample_output/run_example_gemini.
    ```toml
    LLM_PROVIDER = "gemini"
    LLM_MODEL = "gemini-3.8-flash"
-   GEMINI_USE_VERTEX_AI = true   # falls back to AI Studio (with a warning) if the key isn't allowed on Vertex
+   GEMINI_USE_VERTEX_AI = false  # AI Studio key; set true only with a key allowed on Vertex AI
    GOOGLE_API_KEY = "your-key"
    ```
 4. Click **Deploy**. An app from a private repository starts out private, so open **Share** and make it **public** so graders can open it.
