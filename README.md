@@ -13,7 +13,7 @@ persists the run and presents an explainable leaderboard.
 
 > The LLM only judges proposal content. It never does the arithmetic, the benchmarking, the tie-breaks or the ranking.
 
-![Leaderboard (real Gemini run)](docs/screenshots/4_leaderboard.png)
+![Leaderboard (real Gemini run)](docs/screenshots/5_leaderboard.png)
 
 ---
 
@@ -70,10 +70,10 @@ criteria, extract, consistency guard, prompt, LLM) → **5 Validate** (schema + 
 (case-insensitive). Ranks 1, 2, 3… are assigned only after this sort. PPI is rounded to 4 decimals *before* comparing, so
 float noise can't break a genuine tie. Every supplier gets a plain-English note naming the rule that placed it.
 
-**Worked example** (`sample_output/run_example_gemini.json`, NexaWorks): scores 7.5, 7, 7.5, 8, 7.5 out of 10 with
-weights 30/20/20/20/10 give absolute = 22.5 + 14 + 15 + 16 + 7.5 = **75.0**. The benchmarks are 8, 7, 8, 8.5, 7.5 (all set
-by Apex), so the relative % values are 93.75, 100, 93.75, 94.12, 100 and
-PPI = (93.75·30 + 100·20 + 93.75·20 + 94.12·20 + 100·10) / 100 = **95.70**. Apex leads every criterion, so its PPI is 100.
+**Worked example** (live Gemini run `RFP-20260928-200541-f79d`, NexaWorks): scores 7, 7, 7.5, 7.5, 7.5 out of 10 with
+weights 30/20/20/20/10 give absolute = 21 + 14 + 15 + 15 + 7.5 = **72.5**. The benchmarks are 8, 7.5, 8, 8.5, 8 (all set by
+Apex), so the relative % values are 87.5, 93.33, 93.75, 88.24, 93.75 and
+PPI = (87.5·30 + 93.33·20 + 93.75·20 + 88.24·20 + 93.75·10) / 100 = **90.69**. Apex leads every criterion, so its PPI is 100.
 
 Tie-break rules 2–4 (date → rating → name) are exercised in the test suite, including four identical proposals submitted
 under different names (`tests/test_pipeline_mock.py`).
@@ -147,12 +147,12 @@ rating out of 10, which the app pre-fills on upload.
 
 | Supplier (file) | Stated in the PDF | Profile | Real Gemini result |
 |---|---|---|---|
-| Apex Systems (`apex_systems.pdf`) | 2026-08-20 · 8/10 | Strong architecture and security controls; INR 48 lakh + 8 lakh/yr | Rank 1 · leads every criterion (PPI 100) |
-| NexaWorks (`nexaworks.pdf`) | 2026-08-18 · 9/10 | Balanced; detailed milestones and support model; INR 31 lakh + 6 lakh/yr | Rank 2 · PPI 95.70 |
+| Apex Systems (`apex_systems.pdf`) | 2026-08-20 · 8/10 | Strong architecture and security controls; INR 48 lakh + 8 lakh/yr | Rank 1 · leads every criterion (PPI 100, absolute 80.0) |
+| NexaWorks (`nexaworks.pdf`) | 2026-08-18 · 9/10 | Balanced; detailed milestones and support model; INR 31 lakh + 6 lakh/yr | Rank 2 · PPI 90.69 |
 | Orbit Digital (`orbit_digital.pdf`) | 2026-08-21 · 10/10 | Strong experience; interface mapping deferred until after award; INR 35 lakh + 6.5 lakh/yr | Rank 3 · Tech 5 (vague integration) |
 | BrightPath Tech (`brightpath_tech.pdf`) | 2026-08-25 · 5/10 | Cheapest and fastest (8 weeks); security claims without certifications or evidence | Rank 4 · Security 2 |
 
-Sample exported JSON from a real Gemini run: [`sample_output/run_example_gemini.json`](sample_output/run_example_gemini.json).
+The complete result of any run, including every scorecard, is exported from **Run details → Download complete result (JSON)**.
 
 ## Validation and error handling
 
@@ -182,8 +182,9 @@ Sample exported JSON from a real Gemini run: [`sample_output/run_example_gemini.
 | | |
 |---|---|
 | ![Criteria](docs/screenshots/1_criteria.png) Criteria | ![Supplier input](docs/screenshots/2_suppliers_input.png) Upload, metadata pre-filled from the PDFs |
-| ![Validation error](docs/screenshots/7_validation_error.png) Validation error (duplicate name) | ![Run completed](docs/screenshots/3_run_completed.png) Run completed, endpoint warning |
-| ![Scorecard](docs/screenshots/5_scorecard.png) Scorecard, verified evidence | ![Run details](docs/screenshots/6_run_details.png) Run details, tie-breaks, step log |
+| ![Running](docs/screenshots/3_running.png) Agentic workflow running (live progress) | ![Run completed](docs/screenshots/4_run_completed.png) Run completed, every tool call logged |
+| ![Leaderboard](docs/screenshots/5_leaderboard.png) Leaderboard | ![Scorecard](docs/screenshots/6_scorecard.png) Scorecard, verified evidence |
+| ![Run details](docs/screenshots/7_run_details.png) Run details, tie-breaks, JSON download | |
 
 ---
 
@@ -224,7 +225,7 @@ Record the live app (about 3–4 minutes):
 | At least four synthetic supplier PDFs | `sample_pdfs/` (4 fictional proposals) |
 | Deployed app on Streamlit Community Cloud | Live-app link at the top |
 | README: setup, architecture, formulas, assumptions, screenshots | This file |
-| Sample exported JSON for one completed run | `sample_output/run_example_gemini.json` |
+| Sample exported JSON for one completed run | Export from **Run details → Download complete result (JSON)** and include it with the submission |
 | Short demo: one successful run + validation/error case | Demo-video link at the top |
 
 ## Known limitations
@@ -242,7 +243,6 @@ app.py                    Streamlit UI (5 screens)
 rfp/                      orchestrator, tools, agents, db
 seed_db.py                DB creation + seed script
 sample_pdfs/              4 fictional supplier proposals
-sample_output/            exported run JSON (real Gemini runs)
 tests/                    pytest suite (38 tests)
 docs/screenshots/         README images
 ```
