@@ -40,10 +40,10 @@ flowchart LR
 | Component | File | Responsibility |
 |---|---|---|
 | Orchestrator Agent | `rfp/orchestrator.py` | Validates inputs; creates the batch (`RFP_RUN_ID`) and one `pending` supplier entry each; reloads criteria and re-checks that the weights total 100%; calls the tools in order; evaluates distinct documents in parallel; logs every tool call; persists the run or marks it `failed`. |
-| Document Tool | `rfp/document_tool.py` | Extracts clean, `[Page N]`-tagged text (PyMuPDF, ligatures expanded). Scanned or corrupt PDFs become warnings. |
+| Document Tool | `rfp/document_tool.py` | Extracts clean, `[Page N]`-tagged text (PyMuPDF, ligatures expanded). Pre-fills supplier name, submission date and experience rating when the PDF states them. Scanned or corrupt PDFs become warnings. |
 | Consistency guard | `rfp/orchestrator.py` (`_fingerprint`) | Hashes each document with the supplier's own name masked. Identical proposals are evaluated **once** and share the scorecard, because LLMs are not deterministic even at temperature 0. The duplicates are flagged as a possible duplicate or collusive bid. |
 | Evaluation Agent | `rfp/evaluation_agent.py` | Builds the prompt from the **active DB criteria** (nothing hard-coded) and asks for one JSON result per criterion, with verbatim, page-tagged evidence. **Self-correction:** if the Validation Tool reports fixable issues, the agent is re-prompted once with exactly those issues. The repair is kept only if it is better on substance: more criteria validly answered, then more verified quotes, then fewer issues. |
-| LLM adapters | `rfp/llm.py` | Gemini (AI Studio, or Vertex AI via `GEMINI_USE_VERTEX_AI`), Anthropic, OpenAI and OpenRouter, with **schema-enforced JSON** where the provider supports it. There is also a keyless mock for tests. |
+| LLM adapters | `rfp/llm.py` | Gemini (AI Studio, or Vertex AI via `GEMINI_USE_VERTEX_AI`, with an automatic, reported fallback to AI Studio if Vertex rejects the key), Anthropic, OpenAI and OpenRouter, with **schema-enforced JSON** where the provider supports it. Reads a local `.env`. There is also a keyless mock for tests. |
 | Validation Tool | `rfp/validation.py` | Pydantic schema checks. Fills missing criteria, clips out-of-range scores, and drops unknown or duplicate IDs. Takes `max_score` from the DB, never from the LLM. **Evidence grounding:** checks that every quote actually appears in the PDF, on the page it cites. Every fix is recorded as a warning. |
 | Ranking Tool | `rfp/ranking.py` | Pure, deterministic Python: all formulas, peer benchmarks, tie-breaks, ranks and "why this position" explanations. |
 | Persistence | `rfp/db.py` | Schema, criteria CRUD, run and supplier results. |
@@ -70,13 +70,13 @@ criteria, extract, consistency guard, prompt, LLM) → **5 Validate** (schema + 
 (case-insensitive). Ranks 1, 2, 3… are assigned only after this sort. PPI is rounded to 4 decimals *before* comparing, so
 float noise can't break a genuine tie. Every supplier gets a plain-English note naming the rule that placed it.
 
-**Worked example** (`sample_output/run_example_gemini.json`, Apex Systems): scores 9.5, 9, 8.5, 9.5, 8 out of 10 with
-weights 30/20/20/20/10 give absolute = 28.5 + 18 + 17 + 19 + 8 = **90.5**. The benchmarks are 9.5, 9.5, 8.5, 9.5, 9.5, so the
-relative % values are 100, 94.74, 100, 100, 84.21 and PPI = (100·30 + 94.74·20 + 100·20 + 100·20 + 84.21·10) / 100 = **97.37**.
+**Worked example** (`sample_output/run_example_gemini.json`, NexaWorks): scores 7.5, 7, 7.5, 8, 7.5 out of 10 with
+weights 30/20/20/20/10 give absolute = 22.5 + 14 + 15 + 16 + 7.5 = **75.0**. The benchmarks are 8, 7, 8, 8.5, 7.5 (all set
+by Apex), so the relative % values are 93.75, 100, 93.75, 94.12, 100 and
+PPI = (93.75·30 + 100·20 + 93.75·20 + 94.12·20 + 100·10) / 100 = **95.70**. Apex leads every criterion, so its PPI is 100.
 
-**Tie-break demo** (`sample_output/run_tiebreak_demo_gemini.json`): four identical proposals get PPI 100 each.
-Rule 2 puts Delta (submitted 20 Feb) above Echo (24 Feb). Rule 3 puts Echo (rating 5) above Foxtrot (rating 3). Rule 4 puts
-Foxtrot above Golf (alphabetical).
+Tie-break rules 2–4 (date → rating → name) are exercised in the test suite, including four identical proposals submitted
+under different names (`tests/test_pipeline_mock.py`).
 
 ---
 
@@ -103,11 +103,11 @@ Requires Python 3.11+ (3.12 recommended).
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python seed_db.py                 # create data/rfp.db + seed criteria (--reset to start over)
-python generate_sample_pdfs.py    # (re)create the synthetic proposals in sample_pdfs/
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # add your key (never commit this file)
+cp .env.example .env              # add your key (.env is gitignored, never commit it)
 streamlit run app.py
 ```
 
+Configuration is read from real environment variables first, then `.env`, then Streamlit secrets (used on Streamlit Cloud).
 With no key, the app runs in **mock mode**, a deterministic keyword heuristic, so it still works offline and for the tests.
 
 | Variable | Values / purpose |
@@ -120,7 +120,8 @@ With no key, the app runs in **mock mode**, a deterministic keyword heuristic, s
 | `RFP_DB_PATH` | Optional SQLite path (default `data/rfp.db`) |
 
 A Vertex AI key must have the **Vertex AI API** allowed in its API restrictions (Google Cloud Console → APIs & Services →
-Credentials → your key). Otherwise Google returns `403 API_KEY_SERVICE_BLOCKED`.
+Credentials → your key). Otherwise Google returns `403 API_KEY_SERVICE_BLOCKED`. In that case the app keeps working by using
+Google AI Studio with the same key. It records `backend: ai-studio` in the run and shows a warning in the sidebar and in Run details.
 Temperature is set to 0 for Gemini. Claude Sonnet 5 and the GPT-5 models don't accept a temperature setting, so
 reproducibility comes from the consistency guard and from storing every validated scorecard.
 
@@ -130,37 +131,34 @@ reproducibility comes from the consistency guard and from storing every validate
 pytest -q
 ```
 
-35 tests, covering:
+38 tests, covering:
 - **Ranking:** hand-computed scores, benchmarks and PPI; zero-benchmark handling; every tie-break level; case-insensitive names; float-noise ties; order independence.
 - **Validation:** malformed and fenced JSON; missing, unknown and duplicate criteria; non-numeric, out-of-range and `null` fields; missing evidence; evidence grounding (real quotes accepted; invented quotes and wrong `[Page N]` tags flagged).
 - **Pipeline:** determinism; step-3 entries marked `failed` on a crash and failed suppliers stored as `failed`; the self-correction loop (a fixed answer is accepted, a worse one rejected, a repair of invalid JSON kept, blank evidence alone never triggers a repair); whole-word name masking; identical proposals sharing one scorecard so rules 2–4 decide; scanned and corrupt PDFs; LLM outage; invalid inputs and non-ISO dates rejected before a run is created.
-- **UI:** a Streamlit `AppTest` run of the full flow.
+- **UI:** a Streamlit `AppTest` run that uploads the four sample PDFs, checks the pre-filled names and ratings, and evaluates; metadata extraction.
+- **LLM config:** `.env` loading (real env vars win) and the Vertex → AI Studio fallback with its warning.
 
 ---
 
-## Synthetic RFP documents (`sample_pdfs/`)
+## Sample RFP documents (`sample_pdfs/`)
 
-Four fictional 2-page responses to *RFP-2026-017: Cloud Procurement Analytics Platform for Northwind Retail Group*. Each
-includes an executive summary, the solution and approach, timeline/team/milestones, a price table with assumptions,
-security/compliance/risk, and support/experience/references.
+Four fictional, 1-page supplier responses (prices in INR). Each states its own submission date and historical experience
+rating out of 10, which the app pre-fills on upload.
 
-| Supplier | Profile | Real Gemini result |
-|---|---|---|
-| Apex Systems | Strong technical design and security (ISO 27001, SOC 2 Type II); highest price ($1.34M); moderate 20-week plan | Rank 1 · Tech 9.5, Security 9.5 |
-| NexaWorks | Balanced ($895K); strongest implementation plan (RACI, risk register) and 24x7 SLA support | Rank 2 · Implementation 9.5, Support 9.5 (both best) |
-| Orbit Digital | 40+ deployments and named references; integration "to be finalised"; medium, estimated price ($965K) | Rank 3 · Tech 5 (vague integration) |
-| BrightPath Tech | Lowest price ($370K), fastest (12 weeks); vague compliance, no risk plan, founded 2024 | Rank 4 · Security 2 |
-| `Scanned_NoText_Supplier.pdf` | Image-only PDF, the **error case** | Warning, scored 0, ranked last |
-| `tiebreak_demo/*` | Four **identical** proposals from four names | Shared scorecard; tie-break rules 2, 3 and 4 decide |
+| Supplier (file) | Stated in the PDF | Profile | Real Gemini result |
+|---|---|---|---|
+| Apex Systems (`apex_systems.pdf`) | 2026-08-20 · 8/10 | Strong architecture and security controls; INR 48 lakh + 8 lakh/yr | Rank 1 · leads every criterion (PPI 100) |
+| NexaWorks (`nexaworks.pdf`) | 2026-08-18 · 9/10 | Balanced; detailed milestones and support model; INR 31 lakh + 6 lakh/yr | Rank 2 · PPI 95.70 |
+| Orbit Digital (`orbit_digital.pdf`) | 2026-08-21 · 10/10 | Strong experience; interface mapping deferred until after award; INR 35 lakh + 6.5 lakh/yr | Rank 3 · Tech 5 (vague integration) |
+| BrightPath Tech (`brightpath_tech.pdf`) | 2026-08-25 · 5/10 | Cheapest and fastest (8 weeks); security claims without certifications or evidence | Rank 4 · Security 2 |
 
-Sample exported JSON (real Gemini runs): [`run_example_gemini.json`](sample_output/run_example_gemini.json) and
-[`run_tiebreak_demo_gemini.json`](sample_output/run_tiebreak_demo_gemini.json).
+Sample exported JSON from a real Gemini run: [`sample_output/run_example_gemini.json`](sample_output/run_example_gemini.json).
 
 ## Validation and error handling
 
 | Situation | Behaviour |
 |---|---|
-| Active weights ≠ 100%, no files, blank or duplicate supplier names (case-insensitive), non-ISO date, rating outside 1-5 | Shown in the UI; Evaluate is disabled; no run is created |
+| Active weights ≠ 100%, no files, blank or duplicate supplier names (case-insensitive), non-ISO date, rating outside 1-10 | Shown in the UI; Evaluate is disabled; no run is created |
 | Criteria edited between upload and evaluation | Re-checked after the reload at step 4; the run is marked `failed` |
 | Scanned/empty PDF, corrupt file | Warning; LLM skipped; supplier flagged ⚠️, scored 0, ranked last; the run still completes |
 | LLM API error or refusal | Warning; supplier zero-filled and flagged; other suppliers unaffected |
@@ -171,7 +169,7 @@ Sample exported JSON (real Gemini runs): [`run_example_gemini.json`](sample_outp
 ## Assumptions
 
 - Scores are per criterion on 0..max_score (default 10). Weights are percentages of the active set.
-- Submission date and experience rating (1-5) are entered by the user; the LLM never sets them.
+- Supplier name, submission date and experience rating (1-10) are pre-filled from the PDF text when stated (for example "Submission date: 2026-08-20", "Historical experience rating: 8/10"), and the user confirms or edits them. The LLM never sets them.
 - Evidence grounding compares lowercase alphanumeric words, so punctuation, line breaks and page tags don't matter. Quotes may join separate passages with "...". Each passage needs at least 3 words.
 - Documents longer than 80,000 characters are truncated for the LLM, with a warning.
 - Proposals are untrusted input. The prompt tells the model to treat them as data and to flag embedded instructions as risks. Scores are clipped to range and all the maths stays in Python.
@@ -183,10 +181,9 @@ Sample exported JSON (real Gemini runs): [`run_example_gemini.json`](sample_outp
 
 | | |
 |---|---|
-| ![Criteria](docs/screenshots/1_criteria.png) Criteria | ![Supplier input](docs/screenshots/2_suppliers_input.png) Supplier input |
-| ![Run completed](docs/screenshots/3_run_progress.png) Run completed | ![Scorecard](docs/screenshots/5_scorecard.png) Scorecard, verified evidence |
-| ![Run details](docs/screenshots/6_run_details.png) Run details and warnings | ![Tie-break rules](docs/screenshots/7_tiebreak_rules.png) Tie-break rules 2–4 |
-| ![Validation error](docs/screenshots/8_validation_error.png) Validation error (duplicate name) | ![Tie-break leaderboard](docs/screenshots/4b_leaderboard_tiebreak.png) Tie-break leaderboard |
+| ![Criteria](docs/screenshots/1_criteria.png) Criteria | ![Supplier input](docs/screenshots/2_suppliers_input.png) Upload, metadata pre-filled from the PDFs |
+| ![Validation error](docs/screenshots/7_validation_error.png) Validation error (duplicate name) | ![Run completed](docs/screenshots/3_run_completed.png) Run completed, endpoint warning |
+| ![Scorecard](docs/screenshots/5_scorecard.png) Scorecard, verified evidence | ![Run details](docs/screenshots/6_run_details.png) Run details, tie-breaks, step log |
 
 ---
 
@@ -200,7 +197,7 @@ Sample exported JSON (real Gemini runs): [`run_example_gemini.json`](sample_outp
    ```toml
    LLM_PROVIDER = "gemini"
    LLM_MODEL = "gemini-3.8-flash"
-   GEMINI_USE_VERTEX_AI = false
+   GEMINI_USE_VERTEX_AI = true   # falls back to AI Studio (with a warning) if the key isn't allowed on Vertex
    GOOGLE_API_KEY = "your-key"
    ```
 4. Click **Deploy**. An app from a private repository starts out private, so open **Share** and make it **public** so graders can open it.
@@ -211,12 +208,12 @@ Sample exported JSON (real Gemini runs): [`run_example_gemini.json`](sample_outp
 Record the live app (about 3–4 minutes):
 
 1. **Criteria:** show the 5 criteria totalling 100%. Set a weight to 40 and click **Save** to show the "must total 100%" error, then undo.
-2. **Input + validation error:** load the 4 proposals and the scanned PDF, rename one supplier to a duplicate to show the error and the disabled button, then fix it.
+2. **Input + validation error:** upload the 4 PDFs from `sample_pdfs/` and show that name, date and rating are pre-filled. Rename one supplier to a duplicate to show the error and the disabled button, then fix it.
 3. **Successful run:** click **Evaluate** and let the progress messages show each tool running.
-4. **Leaderboard:** ranks, absolute score, PPI, criterion comparison. The scanned supplier is ⚠️ last (the error case).
-5. **Scorecard:** benchmarks, gaps and ✅ verified evidence, then the flagged scanned supplier.
+4. **Leaderboard:** ranks, absolute score, PPI, criterion comparison.
+5. **Scorecard:** benchmarks, gaps, ✅ verified evidence and the justification for each score.
 6. **Run details:** `RFP_RUN_ID`, warnings, tie-break explanations, step log and formulas; download the JSON.
-7. **Tie-break demo (optional):** run the tie-break pack and show rules 2, 3 and 4 each deciding one place.
+7. **Error case (optional):** upload a PDF with no text layer (e.g. a scan) to show it flagged ⚠️, scored 0 and ranked last.
 
 ## Submission checklist (brief section 10)
 
@@ -224,10 +221,10 @@ Record the live app (about 3–4 minutes):
 |---|---|
 | Source code, folder structure, `requirements.txt` | This repository ([project structure](#project-structure)) |
 | SQLite creation/seed script with sample criteria | `seed_db.py` (schema and seed in `rfp/db.py`) |
-| At least four synthetic supplier PDFs | `sample_pdfs/` (4 proposals + scanned error case + tie-break pack), made by `generate_sample_pdfs.py` |
+| At least four synthetic supplier PDFs | `sample_pdfs/` (4 fictional proposals) |
 | Deployed app on Streamlit Community Cloud | Live-app link at the top |
 | README: setup, architecture, formulas, assumptions, screenshots | This file |
-| Sample exported JSON for one completed run | `sample_output/run_example_gemini.json` (+ `run_tiebreak_demo_gemini.json`) |
+| Sample exported JSON for one completed run | `sample_output/run_example_gemini.json` |
 | Short demo: one successful run + validation/error case | Demo-video link at the top |
 
 ## Known limitations
@@ -244,9 +241,8 @@ Record the live app (about 3–4 minutes):
 app.py                    Streamlit UI (5 screens)
 rfp/                      orchestrator, tools, agents, db
 seed_db.py                DB creation + seed script
-generate_sample_pdfs.py   synthetic supplier PDFs
-sample_pdfs/              4 proposals + scanned error case + tiebreak_demo/
+sample_pdfs/              4 fictional supplier proposals
 sample_output/            exported run JSON (real Gemini runs)
-tests/                    pytest suite (35 tests)
+tests/                    pytest suite (38 tests)
 docs/screenshots/         README images
 ```

@@ -8,25 +8,9 @@ import pandas as pd
 import streamlit as st
 
 from rfp import db, llm
+from rfp.document_tool import extract_metadata, extract_text
 from rfp.orchestrator import FORMULAS, check_inputs, run_batch
 from rfp.ranking import TIE_BREAK_ORDER
-
-SAMPLES = Path(__file__).parent / "sample_pdfs"
-# Bundled demo proposals: file -> (supplier, submission date, experience rating 1-5)
-SAMPLE_META = {
-    "Apex_Systems.pdf": ("Apex Systems", "2026-03-02", 4),
-    "BrightPath_Tech.pdf": ("BrightPath Tech", "2026-02-26", 2),
-    "NexaWorks.pdf": ("NexaWorks", "2026-03-02", 4),
-    "Orbit_Digital.pdf": ("Orbit Digital", "2026-02-28", 5),
-    "Scanned_NoText_Supplier.pdf": ("Scanned Supplier (error case)", "2026-03-01", 3),
-}
-# Tie-break demo: identical proposals -> equal PPI, so rule 2 (date), rule 3 (rating) and rule 4 (name) each decide a pair
-TIEBREAK_META = {
-    "tiebreak_demo/Delta_Analytics.pdf": ("Delta Analytics", "2026-02-20", 3),
-    "tiebreak_demo/Echo_Analytics.pdf": ("Echo Analytics", "2026-02-24", 5),
-    "tiebreak_demo/Foxtrot_Analytics.pdf": ("Foxtrot Analytics", "2026-02-24", 3),
-    "tiebreak_demo/Golf_Analytics.pdf": ("Golf Analytics", "2026-02-24", 3),
-}
 
 st.set_page_config(page_title="Agentic RFP Evaluation", page_icon="📑", layout="wide")
 
@@ -34,6 +18,7 @@ st.set_page_config(page_title="Agentic RFP Evaluation", page_icon="📑", layout
 @st.cache_resource
 def _init():
     db.init_db()
+    llm.load_env_file()  # local .env (gitignored); real env vars win
     # Streamlit secrets (local .streamlit/secrets.toml or Community Cloud) -> env vars read by rfp.llm
     try:
         for k, v in st.secrets.items():
@@ -41,6 +26,31 @@ def _init():
                 os.environ.setdefault(k, str(v))
     except Exception:  # no secrets file: plain env vars are used
         pass
+
+
+@st.cache_data(show_spinner=False)
+def _prefill(fname, data):
+    """Supplier name, submission date and rating (1-10) stated in the PDF, else sensible defaults."""
+    try:
+        meta = extract_metadata(extract_text(data)[0])
+    except ValueError:  # unreadable file: the orchestrator reports it properly
+        meta = {}
+    name = meta.get("supplier_name") or Path(fname).stem.replace("_", " ").title()
+    rating = meta.get("experience_rating")
+    rating = min(10, max(1, round(rating))) if rating is not None else 5
+    try:
+        submitted = date.fromisoformat(meta.get("submission_date") or "").isoformat()
+    except ValueError:  # not stated, or not a real date
+        submitted = str(date.today())
+    return name, submitted, rating
+
+
+def _show_llm(slot, provider, model):
+    backend, note = llm.gemini_backend() if provider == "gemini" else (None, None)
+    with slot.container():
+        st.markdown(f"**LLM:** `{provider}` · `{model}`" + (f"  \n**Endpoint:** {backend}" if backend else ""))
+        if note:
+            st.warning(note)
 
 
 def _open_past_run():
@@ -56,11 +66,8 @@ with st.sidebar:
     st.caption("Supplier proposals → LLM scorecards → deterministic peer ranking")
     try:
         provider, model = llm.config()
-        backend = ""
-        if provider == "gemini":
-            backend = " · Vertex AI" if os.environ.get("GEMINI_USE_VERTEX_AI", "").lower() in ("1", "true", "yes", "on") \
-                else " · AI Studio"
-        st.markdown(f"**LLM:** `{provider}` · `{model}`{backend}")
+        llm_slot = st.empty()  # redrawn after a run: the Gemini endpoint is only known once Vertex has been tried
+        _show_llm(llm_slot, provider, model)
         if provider == "mock":
             st.info("Mock mode: keyword heuristic, no API key. Set `LLM_PROVIDER` for real evaluation.")
     except ValueError as e:
@@ -111,36 +118,30 @@ with tabs[0]:
 # ---------- 2. supplier input ----------
 with tabs[1]:
     st.subheader("Supplier proposals")
-    use_samples = st.toggle("Use the bundled sample proposals (4 suppliers + 1 scanned error case)")
-    use_twins = st.toggle("Use the tie-break demo pack (4 identical proposals: equal PPI, so rules 2-4 decide)")
     uploads = st.file_uploader("Upload supplier RFP responses (PDF)", type=["pdf"], accept_multiple_files=True)
-
     files = [(f.name, f.getvalue()) for f in uploads or []]
-    for on, meta in ((use_samples, SAMPLE_META), (use_twins, TIEBREAK_META)):
-        if on:
-            files += [(n, (SAMPLES / n).read_bytes()) for n in meta if (SAMPLES / n).exists()]
 
     submissions = []
     if files:
         st.markdown("**Supplier metadata**")
         h = st.columns([3, 3, 2, 2])
-        for col, label in zip(h, ["File", "Supplier name", "Submission date", "Experience (1-5)"]):
+        for col, label in zip(h, ["File", "Supplier name", "Submission date", "Experience (1-10)"]):
             col.caption(label)
+        st.caption("Pre-filled from each PDF where it states them - check and edit before evaluating.")
         for i, (fname, data) in enumerate(files):
-            name0, date0, rating0 = {**SAMPLE_META, **TIEBREAK_META}.get(
-                fname, (Path(fname).stem.replace("_", " "), str(date.today()), 3))
+            name0, date0, rating0 = _prefill(fname, data)
             c = st.columns([3, 3, 2, 2])
             c[0].markdown(f"`{fname}`  \n{len(data) / 1024:.0f} KB")
             name = c[1].text_input("Supplier name", name0, key=f"name{i}{fname}", label_visibility="collapsed")
             sdate = c[2].date_input("Submission date", date.fromisoformat(date0), key=f"date{i}{fname}",
                                     label_visibility="collapsed")
-            rating = c[3].slider("Experience rating", 1, 5, rating0, key=f"rate{i}{fname}", label_visibility="collapsed")
+            rating = c[3].slider("Experience rating", 1, 10, rating0, key=f"rate{i}{fname}", label_visibility="collapsed")
             submissions.append({"supplier_name": name, "submission_date": sdate.isoformat(),
                                 "experience_rating": rating, "pdf_bytes": data, "filename": fname})
 
     errors = check_inputs(submissions, db.get_criteria())
     if not submissions:
-        st.info("Upload two or more supplier PDFs, or switch on the bundled samples above.")
+        st.info("Upload two or more supplier PDFs to compare.")
     else:
         for e in errors:
             st.error(e)
@@ -153,6 +154,7 @@ with tabs[1]:
         with st.status(f"Running agentic workflow with {provider}/{model}…", expanded=True) as status:
             try:
                 run = run_batch(submissions, provider=provider, model=model, on_progress=status.write)
+                _show_llm(llm_slot, provider, model)
                 st.session_state.run = run
                 status.update(label=f"Completed {run['rfp_run_id']} · {len(run['warnings'])} warning(s)",
                               state="complete", expanded=False)

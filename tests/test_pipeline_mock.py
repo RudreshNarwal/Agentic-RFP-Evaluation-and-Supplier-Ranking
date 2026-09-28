@@ -1,20 +1,31 @@
-"""End-to-end: sample PDFs -> orchestrator (mock LLM) -> SQLite. Needs `python generate_sample_pdfs.py` first."""
+"""End-to-end: sample PDFs -> orchestrator (mock LLM) -> SQLite."""
 from pathlib import Path
 
+import pymupdf
 import pytest
 
 from rfp import db
 from rfp.orchestrator import run_batch
 
 PDFS = Path(__file__).resolve().parent.parent / "sample_pdfs"
-META = {"Apex Systems": ("2026-03-02", 4), "BrightPath Tech": ("2026-02-26", 2),
-        "NexaWorks": ("2026-03-02", 4), "Orbit Digital": ("2026-02-28", 5)}
+# supplier -> (file, submission date, experience rating 1-10), as stated in each PDF
+META = {"Apex Systems": ("apex_systems.pdf", "2026-08-20", 8), "BrightPath Tech": ("brightpath_tech.pdf", "2026-08-25", 5),
+        "NexaWorks": ("nexaworks.pdf", "2026-08-18", 9), "Orbit Digital": ("orbit_digital.pdf", "2026-08-21", 10)}
 
 
 def subs(extra=()):
-    out = [{"supplier_name": n, "submission_date": d, "experience_rating": r, "filename": f"{n}.pdf",
-            "pdf_bytes": (PDFS / f"{n.replace(' ', '_')}.pdf").read_bytes()} for n, (d, r) in META.items()]
+    out = [{"supplier_name": n, "submission_date": d, "experience_rating": r, "filename": f,
+            "pdf_bytes": (PDFS / f).read_bytes()} for n, (f, d, r) in META.items()]
     return out + list(extra)
+
+
+def image_only_pdf():
+    """A 'scanned' proposal: drawings only, no text layer."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for y in range(100, 700, 20):
+        page.draw_line((72, y), (500, y), width=6)
+    return doc.tobytes()
 
 
 @pytest.fixture
@@ -41,7 +52,7 @@ def test_full_run_is_persisted_and_deterministic(dbp):
 
 def test_image_only_and_corrupt_pdfs_become_warnings_not_crashes(dbp):
     bad = [{"supplier_name": "Scanned Co", "submission_date": "2026-03-01", "experience_rating": 3, "filename": "s.pdf",
-            "pdf_bytes": (PDFS / "Scanned_NoText_Supplier.pdf").read_bytes()},
+            "pdf_bytes": image_only_pdf()},
            {"supplier_name": "Broken Co", "submission_date": "2026-03-01", "experience_rating": 3, "filename": "b.pdf",
             "pdf_bytes": b"not a pdf at all"}]
     run = run_batch(subs(bad), db_path=dbp, provider="mock", model="m")
@@ -58,8 +69,8 @@ def test_llm_exception_is_contained(dbp, monkeypatch):
     run = run_batch(subs(), db_path=dbp, provider="anthropic", model="x")
     assert all(s["absolute_score"] == 0 for s in run["suppliers"])
     assert sum("API down" in w for w in run["warnings"]) == 4
-    # all tied at PPI 100 (every benchmark is 0) -> date, then rating, then name decide
-    assert [s["supplier_name"] for s in run["suppliers"]] == ["BrightPath Tech", "Orbit Digital", "Apex Systems", "NexaWorks"]
+    # all tied at PPI 0 (every benchmark is 0) -> earliest submission date decides
+    assert [s["supplier_name"] for s in run["suppliers"]] == ["NexaWorks", "Apex Systems", "Orbit Digital", "BrightPath Tech"]
 
 
 def test_invalid_inputs_rejected_before_run(dbp):
@@ -97,7 +108,7 @@ def test_self_correction_fixes_a_bad_first_answer(dbp, monkeypatch):
             return json.dumps({"criteria": [{"criterion_id": 1, "score": 9, "max_score": 10,
                                              "justification": "j", "evidence": "quantum blockchain synergy platform"}]})
         return json.dumps({"criteria": [{"criterion_id": c["criterion_id"], "score": 7, "max_score": 10, "justification": "j",
-                                         "evidence": "[Page 1] NexaWorks proposes a balanced, low-risk delivery"}
+                                         "evidence": "[Page 1] Balanced solution focused on implementation predictability"}
                                         for c in crit], "risks": [], "overall_summary": "s"})
     monkeypatch.setattr("rfp.llm.complete_json", fake_llm)
     run = run_batch(subs()[2:3], db_path=dbp, provider="gemini", model="x")  # NexaWorks only
@@ -123,8 +134,9 @@ def test_identical_proposals_share_one_scorecard_and_tie_breaks_2_to_4_decide(db
     calls = []
     real = ea.evaluate
     monkeypatch.setattr(ea, "evaluate", lambda *a, **k: (calls.append(a[2]), real(*a, **k))[1])
-    twins = [{"supplier_name": n, "submission_date": d, "experience_rating": r, "filename": f"{n}.pdf",
-              "pdf_bytes": (PDFS / "tiebreak_demo" / f"{n.replace(' ', '_')}.pdf").read_bytes()} for n, (d, r) in TWINS.items()]
+    same = (PDFS / "nexaworks.pdf").read_bytes()  # identical document submitted under four names
+    twins = [{"supplier_name": n, "submission_date": d, "experience_rating": r, "filename": f"{n}.pdf", "pdf_bytes": same}
+             for n, (d, r) in TWINS.items()]
     run = run_batch(list(reversed(twins)), db_path=dbp, provider="mock", model="m")
     sup = run["suppliers"]
     assert len(calls) == 1  # evaluated once, shared three times
@@ -144,7 +156,7 @@ def _fake_llm(first, second):
     return fake
 
 
-GOOD = "[Page 1] NexaWorks proposes a balanced, low-risk delivery"
+GOOD = "[Page 1] Balanced solution focused on implementation predictability"
 
 
 def test_repair_of_invalid_json_is_accepted_even_with_some_unverified_quotes(dbp, monkeypatch):
@@ -180,7 +192,7 @@ def test_blank_evidence_alone_does_not_trigger_a_repair_call(dbp, monkeypatch):
 
 def test_failed_supplier_rows_are_marked_failed_in_sqlite(dbp):
     bad = [{"supplier_name": "Scanned Co", "submission_date": "2026-03-01", "experience_rating": 3, "filename": "s.pdf",
-            "pdf_bytes": (PDFS / "Scanned_NoText_Supplier.pdf").read_bytes()}]
+            "pdf_bytes": image_only_pdf()}]
     run = run_batch(subs(bad), db_path=dbp, provider="mock", model="m")
     status = {r["supplier_name"]: r["status"] for r in db.get_supplier_rows(run["rfp_run_id"], dbp)}
     assert status["Scanned Co"] == "failed" and status["NexaWorks"] == "scored"

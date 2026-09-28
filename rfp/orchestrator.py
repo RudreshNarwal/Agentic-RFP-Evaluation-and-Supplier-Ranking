@@ -42,8 +42,8 @@ def check_inputs(submissions, criteria):
             date.fromisoformat(str(s["submission_date"]))
         except ValueError:
             errors.append(f"{s['supplier_name']}: submission date must be YYYY-MM-DD.")
-        if not 1 <= float(s["experience_rating"]) <= 5:
-            errors.append(f"{s['supplier_name']}: experience rating must be between 1 and 5.")
+        if not 1 <= float(s["experience_rating"]) <= 10:
+            errors.append(f"{s['supplier_name']}: experience rating must be between 1 and 10.")
     return errors
 
 
@@ -175,6 +175,11 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
             warnings += out["warnings"]
             for tool, detail in out["log"]:
                 log(tool, detail)
+        backend = None
+        if provider == "gemini":
+            backend, note = llm.gemini_backend()
+            if note:
+                warnings.append(note)
         if all(o["failed"] for o in outputs):
             warnings.append("No supplier could be evaluated; the ranking below only reflects tie-break rules.")
 
@@ -198,7 +203,7 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
 
         run = {
             "rfp_run_id": run_id, "created_at": now.isoformat(timespec="seconds"), "status": "completed",
-            "llm": {"provider": provider, "model": model},
+            "llm": {"provider": provider, "model": model, **({"backend": backend} if backend else {})},
             "criteria": criteria, "formulas": FORMULAS, "tie_break_order": TIE_BREAK_ORDER,
             "benchmarks": {str(k): v for k, v in ranked["benchmarks"].items()},
             "suppliers": ranked["suppliers"], "warnings": warnings, "steps": steps,

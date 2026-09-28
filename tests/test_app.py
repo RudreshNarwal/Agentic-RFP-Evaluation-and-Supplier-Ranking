@@ -1,24 +1,41 @@
-"""UI smoke test (Streamlit AppTest, mock LLM) + criteria editing round-trip."""
+"""UI tests (Streamlit AppTest, mock LLM): upload the real sample PDFs, check pre-fill, evaluate."""
+from pathlib import Path
+
 from streamlit.testing.v1 import AppTest
 
 from rfp import db
+from rfp.document_tool import extract_metadata, extract_text
+
+PDFS = Path(__file__).resolve().parent.parent / "sample_pdfs"
 
 
-def test_app_full_flow_with_bundled_samples(tmp_path, monkeypatch):
+def test_metadata_is_prefilled_from_the_pdf_text():
+    meta = extract_metadata(extract_text((PDFS / "orbit_digital.pdf").read_bytes())[0])
+    assert meta == {"supplier_name": "Orbit Digital", "submission_date": "2026-08-21", "experience_rating": 10.0}
+    assert extract_metadata("[Page 1]\nno metadata here") == {"supplier_name": None, "submission_date": None,
+                                                                "experience_rating": None}
+
+
+def test_app_full_flow_with_uploaded_pdfs(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "ui.db"))
     at = AppTest.from_file("../app.py", default_timeout=60)
-    at.secrets["LLM_PROVIDER"] = "mock"  # never hit a real API from tests, even if secrets.toml exists
+    at.secrets["LLM_PROVIDER"] = "mock"  # never hit a real API from tests, even if a key is configured
     at.run()
     assert not at.exception
-    at.toggle[0].set_value(True).run()
+    assert next(b for b in at.button if "Evaluate" in b.label).disabled  # nothing uploaded yet
+
+    at.file_uploader[0].set_value([(p.name, p.read_bytes(), "application/pdf") for p in sorted(PDFS.glob("*.pdf"))]).run()
+    assert not at.exception
+    assert sorted(t.value for t in at.text_input) == ["Apex Systems", "BrightPath Tech", "NexaWorks", "Orbit Digital"]
+    assert sorted(s.value for s in at.slider) == [5, 8, 9, 10]  # ratings read from the PDFs
+
     evaluate = next(b for b in at.button if "Evaluate" in b.label)
     assert not evaluate.disabled
     evaluate.click().run()
     assert not at.exception
     run = at.session_state["run"]
-    assert run["status"] == "completed" and len(run["suppliers"]) == 5
-    assert run["suppliers"][-1]["supplier_name"] == "Scanned Supplier (error case)"
+    assert run["status"] == "completed" and len(run["suppliers"]) == 4
     assert db.load_run(run["rfp_run_id"])["rfp_run_id"] == run["rfp_run_id"]
 
 

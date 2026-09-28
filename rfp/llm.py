@@ -19,6 +19,34 @@ DEFAULT_MODELS = {
 }
 
 
+def load_env_file(path=".env"):
+    """Minimal .env loader (KEY=VALUE lines, # comments, optional quotes). Real env vars always win."""
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except FileNotFoundError:
+        return
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            value = value.split(" #", 1)[0].strip().strip("'\"")
+            os.environ.setdefault(key.strip(), value)
+
+
+_vertex_blocked = False  # set once Vertex rejects the API key, so later calls skip straight to AI Studio
+
+
+def gemini_backend():
+    """Which Gemini endpoint calls actually go to, plus a warning when the Vertex setting could not be honoured."""
+    if not _flag("GEMINI_USE_VERTEX_AI"):
+        return "ai-studio", None
+    if _vertex_blocked:
+        return "ai-studio", ("GEMINI_USE_VERTEX_AI is true, but Vertex AI rejected the API key (403 PERMISSION_DENIED), "
+                             "so Google AI Studio was used with the same key. Allow 'Vertex AI API' in the key's API "
+                             "restrictions to use Vertex.")
+    return "vertex-ai", None
+
+
 def config():
     provider = os.environ.get("LLM_PROVIDER", "mock").strip().lower()
     if provider not in DEFAULT_MODELS:
@@ -56,24 +84,27 @@ def complete_json(system, prompt, schema, provider, model):
         return resp.choices[0].message.content
 
     if provider == "gemini":
+        global _vertex_blocked
         from google import genai
-        from google.genai import types
+        from google.genai import errors, types
         key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        cfg = types.GenerateContentConfig(
+            system_instruction=system, response_mime_type="application/json", response_json_schema=schema,
+            temperature=0, automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))  # no tools
+        call = lambda client: client.models.generate_content(model=model, contents=prompt, config=cfg).text
         if not _flag("GEMINI_USE_VERTEX_AI"):
-            client = genai.Client(api_key=key)
-        elif os.environ.get("GOOGLE_CLOUD_PROJECT"):
-            client = genai.Client(vertexai=True, project=os.environ["GOOGLE_CLOUD_PROJECT"],
-                                  location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global"))
-        else:  # Vertex AI express mode: API key, no project
-            client = genai.Client(vertexai=True, api_key=key)
-        resp = client.models.generate_content(
-            model=model, contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system, response_mime_type="application/json", response_json_schema=schema,
-                temperature=0,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)),  # no tools here
-        )
-        return resp.text
+            return call(genai.Client(api_key=key))
+        if os.environ.get("GOOGLE_CLOUD_PROJECT"):  # Vertex with Application Default Credentials
+            return call(genai.Client(vertexai=True, project=os.environ["GOOGLE_CLOUD_PROJECT"],
+                                     location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global")))
+        if not _vertex_blocked:  # Vertex AI express mode: API key, no project
+            try:
+                return call(genai.Client(vertexai=True, api_key=key))
+            except errors.ClientError as e:
+                if e.code != 403:
+                    raise
+                _vertex_blocked = True  # key not allowed on Vertex: fall back to AI Studio (reported via gemini_backend)
+        return call(genai.Client(api_key=key))
 
     raise ValueError(f"unsupported provider {provider!r}")
 
