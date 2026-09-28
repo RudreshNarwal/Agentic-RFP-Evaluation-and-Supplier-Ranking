@@ -13,6 +13,32 @@ persists the run and presents an explainable leaderboard.
 
 > The LLM only judges proposal content. It never does the arithmetic, the benchmarking, the tie-breaks or the ranking.
 
+---
+
+## Live run (Gemini)
+
+Run `RFP-20260928-200541-f79d`: the four PDFs in `sample_pdfs/`, evaluated with `gemini-3.8-flash` (Google AI Studio).
+It finished with 0 validation warnings, and all 20 evidence quotes were found in the PDFs.
+
+| Rank | Supplier | Absolute score | PPI | Submitted | Experience | Why this position |
+|---|---|---|---|---|---|---|
+| 1 | Apex Systems | 80.0 | 100.00 | 2026-08-20 | 8/10 | Higher PPI than NexaWorks (leads every criterion) |
+| 2 | NexaWorks | 72.5 | 90.69 | 2026-08-18 | 9/10 | Higher PPI than Orbit Digital |
+| 3 | Orbit Digital | 53.0 | 66.27 | 2026-08-21 | 10/10 | Higher PPI than BrightPath Tech |
+| 4 | BrightPath Tech | 38.0 | 47.96 | 2026-08-25 | 5/10 | Last place on PPI (Security 2/10: no certifications or evidence) |
+
+**1. Running.** The Orchestrator creates the batch and pending supplier entries, reloads the criteria, and reports each
+supplier as the Evaluation Agent finishes it. Suppliers are evaluated in parallel.
+
+![Agentic workflow running](docs/screenshots/3_running.png)
+
+**2. Completed.** Every tool call is logged in order: Document Tool → Evaluation Agent → Validation Tool for each supplier,
+then the Ranking Tool, then persistence to SQLite.
+
+![Run completed](docs/screenshots/4_run_completed.png)
+
+**3. Leaderboard.** Ranks, absolute score, PPI, criterion-by-criterion comparison against the benchmark.
+
 ![Leaderboard (real Gemini run)](docs/screenshots/5_leaderboard.png)
 
 ---
@@ -203,6 +229,17 @@ The complete result of any run, including every scorecard, is exported from **Ru
    ```
 4. Click **Deploy**. An app from a private repository starts out private, so open **Share** and make it **public** so graders can open it.
 5. Replace the live-app placeholder at the top of this README with the URL.
+
+**Check the deployment:** the first build takes a few minutes. When it's ready, the sidebar should show
+`LLM: gemini · gemini-3.8-flash` and `Endpoint: ai-studio`. Upload the four PDFs from `sample_pdfs/` and click **Evaluate**.
+
+| Problem | Fix |
+|---|---|
+| Sidebar says `mock` | The secrets weren't saved. Go to App ⋮ → **Settings → Secrets**, paste them again and save (the app reboots). |
+| `evaluation failed (ClientError 400/403)` in warnings | The key is wrong or not allowed for this API. Check `GOOGLE_API_KEY`, and keep `GEMINI_USE_VERTEX_AI = false` for an AI Studio key. |
+| Build error mentioning pandas or Python | Pick Python 3.12 (App ⋮ → Settings → General), then reboot. |
+| Past runs disappeared | Expected: Community Cloud storage resets when the app restarts. Download the run JSON to keep results. |
+| Visitors are asked to sign in | The app is still private. Open **Share** and make it public. |
 
 ## Demo video
 
