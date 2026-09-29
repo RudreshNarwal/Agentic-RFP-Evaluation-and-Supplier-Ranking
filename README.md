@@ -96,7 +96,8 @@ flowchart LR
 | LLM adapters | `rfp/llm.py` | Gemini (AI Studio, or Vertex AI via `GEMINI_USE_VERTEX_AI`, with an automatic, reported fallback to AI Studio if Vertex rejects the key), Anthropic, OpenAI and OpenRouter, with **schema-enforced JSON** where the provider supports it. Reads a local `.env`. There is also a keyless mock for tests. |
 | Validation Tool | `rfp/validation.py` | Pydantic schema checks. Fills missing criteria, clips out-of-range scores, and drops unknown or duplicate IDs. Takes `max_score` from the DB, never from the LLM. **Evidence grounding:** checks that every quote actually appears in the PDF, on the page it cites. Every fix is recorded as a warning. |
 | Ranking Tool | `rfp/ranking.py` | Pure, deterministic Python: all formulas, peer benchmarks, tie-breaks, ranks and "why this position" explanations. |
-| Persistence | `rfp/db.py` | Schema, criteria CRUD, run and supplier results. |
+| Persistence | `rfp/db.py` | Schema, criteria CRUD, run and supplier results, the stored PDFs for re-evaluation, and upgrades for older databases. |
+| Run comparison | `rfp/compare.py` | Deterministic diff of two runs: rank movement, PPI/absolute/criterion score changes, and changed settings. |
 
 ### Data flow (brief section 4)
 1 Setup → 2 Input → **3 Batch** (`RFP-YYYYMMDD-HHMMSS-xxxx` + a `pending` supplier entry each) → **4 Evaluate** (reload
@@ -258,13 +259,21 @@ The complete result of any run, including every scorecard, is exported from **Ru
 
 ---
 
-## Deploy to Streamlit Community Cloud
+## Deploy to Streamlit Community Cloud (free public URL)
 
-1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub. The repository is **private**, so grant
-   Streamlit access to private repositories when asked.
-2. Click **Create app** → deploy from GitHub: repository `RudreshNarwal/Agentic-RFP-Evaluation-and-Supplier-Ranking`,
-   branch `main`, main file `app.py`. Pick a custom subdomain.
-3. **Advanced settings** → Python **3.12** → Secrets:
+[Streamlit Community Cloud](https://streamlit.io/cloud) hosts Streamlit apps from GitHub **for free**: no credit card,
+and you get a public `https://<name>.streamlit.app` link. The Gemini key on Google AI Studio's free tier is also free.
+
+1. Go to [share.streamlit.io](https://share.streamlit.io) and click **Continue with GitHub**. Sign in as
+   `RudreshNarwal` and approve the permissions. The repository is **private**, so also allow access to private
+   repositories (you can do this later under ⚙️ Settings → Linked accounts).
+2. Click **Create app** (top right), then **Deploy a public app from GitHub** (or "Yup, I have an app").
+3. Fill in:
+   - **Repository:** `RudreshNarwal/Agentic-RFP-Evaluation-and-Supplier-Ranking`
+   - **Branch:** `main`
+   - **Main file path:** `app.py`
+   - **App URL:** choose a subdomain, e.g. `rudresh-rfp-evaluation` → `https://rudresh-rfp-evaluation.streamlit.app`
+4. Open **Advanced settings**: set **Python version** to **3.12**, and paste into **Secrets** (use your AI Studio key):
    ```toml
    LLM_PROVIDER = "gemini"
    LLM_MODEL = "gemini-3.8-flash"
@@ -273,8 +282,20 @@ The complete result of any run, including every scorecard, is exported from **Ru
    ```
    These secrets are the app's default. Visitors can still switch provider or paste their own key in the sidebar's
    **⚙️ LLM settings**, and those choices only apply to their own session.
-4. Click **Deploy**. An app from a private repository starts out private, so open **Share** and make it **public** so graders can open it.
-5. Replace the live-app placeholder at the top of this README with the URL.
+5. Click **Deploy** and wait for the build. The first build takes a few minutes while it installs `requirements.txt`.
+6. **Make it public:** an app from a private repository starts out private, so visitors would hit a sign-in page.
+   Open the app, click **Share** (top right), and set it so anyone with the link can view it.
+7. Open the link in a private/incognito window to confirm it works without signing in, then put it at the top of
+   this README.
+
+**Free-tier behaviour to know:**
+- The app **goes to sleep after a period without visitors**. The next visitor sees "This app has gone to sleep" and a
+  **Yes, get this app back up!** button; it wakes in under a minute. Open the link yourself shortly before a grader or a
+  demo recording uses it.
+- **Storage resets** when the app restarts or wakes: run history and stored PDFs are cleared, while criteria are
+  re-seeded automatically. Download run JSON you want to keep.
+- **Every push to `main` redeploys automatically.** To change the key later, go to App ⋮ → **Settings → Secrets**.
+- Free tier allows **one private app** per account. A public app doesn't count against that limit.
 
 **Check the deployment:** the first build takes a few minutes. When it's ready, the sidebar should show
 `LLM: gemini · gemini-3.8-flash` and `Endpoint: ai-studio`. Upload the four PDFs from `sample_pdfs/` and click **Evaluate**.
@@ -286,6 +307,7 @@ The complete result of any run, including every scorecard, is exported from **Ru
 | Build error mentioning pandas or Python | Pick Python 3.12 (App ⋮ → Settings → General), then reboot. |
 | Past runs disappeared | Expected: Community Cloud storage resets when the app restarts. Download the run JSON to keep results. |
 | Visitors are asked to sign in | The app is still private. Open **Share** and make it public. |
+| "This app has gone to sleep" | Normal on the free tier after a quiet period. Click **Yes, get this app back up!** and wait under a minute. |
 
 ## Demo video
 
@@ -324,8 +346,8 @@ Record the live app (about 3–4 minutes):
 ## Project structure
 
 ```
-app.py                    Streamlit UI (5 screens)
-rfp/                      orchestrator, tools, agents, db
+app.py                    Streamlit UI (7 tabs + LLM settings sidebar)
+rfp/                      orchestrator, tools, agents, db, run comparison
 seed_db.py                DB creation + seed script
 sample_pdfs/              4 fictional supplier proposals
 tests/                    pytest suite (46 tests)
