@@ -63,17 +63,17 @@ Rules:
 </supplier_document>"""
 
 
-def evaluate(text, criteria, supplier_name, provider, model):
+def evaluate(text, criteria, supplier_name, provider, model, **creds):
     """First pass. Returns (raw_output, notes); raw_output is a dict (mock) or the model's text."""
     notes = []
     if len(text) > MAX_CHARS:
         notes.append(f"{supplier_name}: document truncated to {MAX_CHARS:,} of {len(text):,} characters for the LLM.")
     if provider == "mock":
         return llm.mock_evaluate(text, criteria, supplier_name), notes
-    return llm.complete_json(SYSTEM, build_prompt(text, criteria, supplier_name), SCHEMA, provider, model), notes
+    return llm.complete_json(SYSTEM, build_prompt(text, criteria, supplier_name), SCHEMA, provider, model, **creds), notes
 
 
-def repair(text, criteria, supplier_name, previous_raw, issues, provider, model):
+def repair(text, criteria, supplier_name, previous_raw, issues, provider, model, **creds):
     """Self-correction pass: the agent sees exactly what the Validation Tool rejected and returns a fixed scorecard."""
     previous = previous_raw if isinstance(previous_raw, str) else json.dumps(previous_raw)
     feedback = "\n".join(f"- {i.split(': ', 1)[-1]}" for i in issues)
@@ -87,4 +87,4 @@ Previous answer:
 
 Return the complete corrected JSON for ALL criteria. Evidence must be copied word-for-word from the document
 (you may join separate quotes with "..."). If the document has no evidence for a criterion, use "" and score it low."""
-    return llm.complete_json(SYSTEM, prompt, SCHEMA, provider, model)
+    return llm.complete_json(SYSTEM, prompt, SCHEMA, provider, model, **creds)

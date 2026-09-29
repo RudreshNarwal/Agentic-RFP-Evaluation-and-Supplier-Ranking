@@ -71,15 +71,21 @@ def _fingerprint(text, name):
     return hashlib.sha256(" ".join(masked.split()).encode()).hexdigest()
 
 
-def _evaluate_doc(name, text, criteria, provider, model):
+def redact(message, creds):
+    """Remove an API key from error text before it is shown, stored in SQLite or exported."""
+    key = (creds or {}).get("api_key")
+    return message.replace(key, "***") if key else message
+
+
+def _evaluate_doc(name, text, criteria, provider, model, creds):
     """Evaluation Agent -> Validation Tool (-> one self-correction round). Never raises."""
     log, notes, raw, repair = [], [], None, None
     if text is not None:
         try:
-            raw, notes = evaluation_agent.evaluate(text, criteria, name, provider, model)
+            raw, notes = evaluation_agent.evaluate(text, criteria, name, provider, model, **creds)
             log.append(("Evaluation Agent", f"{name}: {provider}/{model} returned a scorecard"))
         except Exception as e:  # network/API error, bad key, refusal...
-            notes.append(f"{name}: evaluation failed ({type(e).__name__}: {str(e)[:200]}); scored 0.")
+            notes.append(f"{name}: evaluation failed ({type(e).__name__}: {redact(str(e), creds)[:200]}); scored 0.")
             log.append(("Evaluation Agent", f"{name}: FAILED - {type(e).__name__}"))
 
     card, warnings = normalize(raw, criteria, name, doc_text=text)
@@ -90,7 +96,7 @@ def _evaluate_doc(name, text, criteria, provider, model):
     if raw is not None and fixable and provider != "mock":
         # Agentic self-correction: feed the validator's findings back to the Evaluation Agent once.
         try:
-            raw2 = evaluation_agent.repair(text, criteria, name, raw, fixable, provider, model)
+            raw2 = evaluation_agent.repair(text, criteria, name, raw, fixable, provider, model, **creds)
             card2, warnings2 = normalize(raw2, criteria, name, doc_text=text)
             repair = {"issues_before": warnings, "issues_after": warnings2,
                       "accepted": _quality(card2, warnings2) > _quality(card, warnings)}
@@ -121,8 +127,10 @@ def _share_scorecard(original, from_name, to_name, text, criteria):
             "repair": None, "failed": original["failed"]}
 
 
-def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=None):
-    """submissions: [{supplier_name, submission_date (ISO str), experience_rating, pdf_bytes, filename}]."""
+def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=None, credentials=None):
+    """submissions: [{supplier_name, submission_date (ISO str), experience_rating, pdf_bytes, filename}].
+    credentials: optional {"api_key", "vertex"} for this run only (e.g. entered in the UI); never persisted."""
+    creds = {k: v for k, v in (credentials or {}).items() if v is not None and v != ""}
     if provider is None:
         provider, model = llm.config()
     progress = on_progress or (lambda msg: None)
@@ -160,7 +168,7 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
         # Step 4c/5 - Evaluation Agent + Validation Tool, in parallel; report each as it finishes.
         results = {}
         with ThreadPoolExecutor(max_workers=min(4, len(unique))) as ex:
-            futures = {ex.submit(_evaluate_doc, submissions[i]["supplier_name"], extracted[i][0], criteria, provider, model): i
+            futures = {ex.submit(_evaluate_doc, submissions[i]["supplier_name"], extracted[i][0], criteria, provider, model, creds): i
                        for i in unique}
             for done, f in enumerate(as_completed(futures), start=1):
                 results[futures[f]] = f.result()
@@ -177,7 +185,7 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
                 log(tool, detail)
         backend = None
         if provider == "gemini":
-            backend, note = llm.gemini_backend()
+            backend, note = llm.gemini_backend(**creds)
             if note:
                 warnings.append(note)
         if all(o["failed"] for o in outputs):
@@ -212,5 +220,5 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
         db.complete_run(run, db_path)
         return run
     except Exception as e:
-        db.fail_run(run_id, f"{type(e).__name__}: {e}", db_path)
+        db.fail_run(run_id, f"{type(e).__name__}: {redact(str(e), creds)}", db_path)
         raise

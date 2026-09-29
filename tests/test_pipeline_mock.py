@@ -102,7 +102,7 @@ def test_self_correction_fixes_a_bad_first_answer(dbp, monkeypatch):
     crit = _db.get_criteria(dbp)
     calls = []
 
-    def fake_llm(system, prompt, schema, provider, model):
+    def fake_llm(system, prompt, schema, provider, model, **kw):
         calls.append(prompt)
         if "automated validator" not in prompt:
             return json.dumps({"criteria": [{"criterion_id": 1, "score": 9, "max_score": 10,
@@ -151,7 +151,7 @@ def test_identical_proposals_share_one_scorecard_and_tie_breaks_2_to_4_decide(db
 
 def _fake_llm(first, second):
     import json
-    def fake(system, prompt, schema, provider, model):
+    def fake(system, prompt, schema, provider, model, **kw):
         return json.dumps(second) if "automated validator" in prompt else (first if isinstance(first, str) else json.dumps(first))
     return fake
 

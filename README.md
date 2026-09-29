@@ -133,6 +133,22 @@ cp .env.example .env              # add your key (.env is gitignored, never comm
 streamlit run app.py
 ```
 
+### Choosing the LLM in the app
+
+The sidebar's **⚙️ LLM settings** panel lets anyone using the app pick the model without touching config files:
+
+- **Provider:** Google Gemini, Anthropic Claude, OpenAI, OpenRouter, or Mock (offline).
+- **Model:** pre-filled with the provider's default; you can type any model ID.
+- **Google endpoint** (Gemini only): **AI Studio** or **Vertex AI**. If Vertex rejects the key, the app uses AI Studio and shows a warning.
+- **API key:** optional when the server already has one configured (the field then says so). Otherwise paste your own.
+- **Test connection:** makes one tiny call and reports success, the endpoint used, or the provider's error.
+
+A key typed into the panel stays in that browser session only. It's passed to each LLM call directly and is never written to
+environment variables, SQLite, the run JSON or logs, and it's removed from any error message before display. So on a public
+deployment, visitors can't see or use each other's keys. Evaluate stays disabled until a key is available.
+
+![LLM settings](docs/screenshots/0_llm_settings.png)
+
 Configuration is read from real environment variables first, then `.env`, then Streamlit secrets (used on Streamlit Cloud).
 With no key, the app runs in **mock mode**, a deterministic keyword heuristic, so it still works offline and for the tests.
 
@@ -157,12 +173,13 @@ reproducibility comes from the consistency guard and from storing every validate
 pytest -q
 ```
 
-38 tests, covering:
+42 tests, covering:
 - **Ranking:** hand-computed scores, benchmarks and PPI; zero-benchmark handling; every tie-break level; case-insensitive names; float-noise ties; order independence.
 - **Validation:** malformed and fenced JSON; missing, unknown and duplicate criteria; non-numeric, out-of-range and `null` fields; missing evidence; evidence grounding (real quotes accepted; invented quotes and wrong `[Page N]` tags flagged).
 - **Pipeline:** determinism; step-3 entries marked `failed` on a crash and failed suppliers stored as `failed`; the self-correction loop (a fixed answer is accepted, a worse one rejected, a repair of invalid JSON kept, blank evidence alone never triggers a repair); whole-word name masking; identical proposals sharing one scorecard so rules 2–4 decide; scanned and corrupt PDFs; LLM outage; invalid inputs and non-ISO dates rejected before a run is created.
 - **UI:** a Streamlit `AppTest` run that uploads the four sample PDFs, checks the pre-filled names and ratings, and evaluates; metadata extraction.
-- **LLM config:** `.env` loading (real env vars win) and the Vertex → AI Studio fallback with its warning.
+- **LLM config:** `.env` loading (real env vars win); the Vertex → AI Studio fallback with its warning, tracked per key; a key passed per call is used without touching the environment.
+- **LLM settings panel:** a real provider with no key disables Evaluate; a UI-entered key and the Vertex choice reach the LLM call but never the environment, the run JSON or SQLite; keys are removed from error text.
 
 ---
 
@@ -227,6 +244,8 @@ The complete result of any run, including every scorecard, is exported from **Ru
    GEMINI_USE_VERTEX_AI = false  # AI Studio key; set true only with a key allowed on Vertex AI
    GOOGLE_API_KEY = "your-key"
    ```
+   These secrets are the app's default. Visitors can still switch provider or paste their own key in the sidebar's
+   **⚙️ LLM settings**, and those choices only apply to their own session.
 4. Click **Deploy**. An app from a private repository starts out private, so open **Share** and make it **public** so graders can open it.
 5. Replace the live-app placeholder at the top of this README with the URL.
 
@@ -280,6 +299,6 @@ app.py                    Streamlit UI (5 screens)
 rfp/                      orchestrator, tools, agents, db
 seed_db.py                DB creation + seed script
 sample_pdfs/              4 fictional supplier proposals
-tests/                    pytest suite (38 tests)
+tests/                    pytest suite (42 tests)
 docs/screenshots/         README images
 ```

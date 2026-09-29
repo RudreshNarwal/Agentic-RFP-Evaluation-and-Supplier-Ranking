@@ -1,12 +1,16 @@
 """LLM adapters. One function per provider, all returning the model's raw JSON text.
 
-Config (env vars / Streamlit secrets):
+Credentials come from the call (api_key / vertex, e.g. typed into the UI for one session) or, when omitted, from the
+server config. A key passed to a call is never written to os.environ, so sessions can't see each other's keys.
+
+Server config (env vars / .env / Streamlit secrets):
   LLM_PROVIDER      anthropic | openai | gemini | openrouter | mock   (default: mock, needs no key)
   LLM_MODEL         overrides the per-provider default below
   GEMINI_USE_VERTEX_AI  true  -> Vertex AI: express mode with GOOGLE_API_KEY, or GOOGLE_CLOUD_PROJECT +
                                  GOOGLE_CLOUD_LOCATION with Application Default Credentials
                         false -> Google AI Studio with GOOGLE_API_KEY (or GEMINI_API_KEY)
 """
+import hashlib
 import os
 import re
 
@@ -33,17 +37,33 @@ def load_env_file(path=".env"):
             os.environ.setdefault(key.strip(), value)
 
 
-_vertex_blocked = False  # set once Vertex rejects the API key, so later calls skip straight to AI Studio
+KEY_ENV = {"gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"), "anthropic": ("ANTHROPIC_API_KEY",),
+           "openai": ("OPENAI_API_KEY",), "openrouter": ("OPENROUTER_API_KEY",)}
+
+_vertex_blocked = set()  # sha256 of API keys Vertex rejected; those calls go straight to AI Studio
 
 
-def gemini_backend():
-    """Which Gemini endpoint calls actually go to, plus a warning when the Vertex setting could not be honoured."""
-    if not _flag("GEMINI_USE_VERTEX_AI"):
+def server_key(provider):
+    """The provider's key from server config, if any."""
+    return next((os.environ[k] for k in KEY_ENV.get(provider, ()) if os.environ.get(k)), None)
+
+
+def _fingerprint(key):
+    return hashlib.sha256((key or "").encode()).hexdigest()
+
+
+def use_vertex(vertex=None):
+    return _flag("GEMINI_USE_VERTEX_AI") if vertex is None else bool(vertex)
+
+
+def gemini_backend(api_key=None, vertex=None):
+    """Which Gemini endpoint calls actually go to, plus a warning when the Vertex choice could not be honoured."""
+    if not use_vertex(vertex):
         return "ai-studio", None
-    if _vertex_blocked:
-        return "ai-studio", ("GEMINI_USE_VERTEX_AI is true, but Vertex AI rejected the API key (403 PERMISSION_DENIED), "
-                             "so Google AI Studio was used with the same key. Allow 'Vertex AI API' in the key's API "
-                             "restrictions to use Vertex.")
+    if _fingerprint(api_key or server_key("gemini")) in _vertex_blocked:
+        return "ai-studio", ("Vertex AI was selected, but it rejected the API key (403 PERMISSION_DENIED), so Google "
+                             "AI Studio was used with the same key. Allow 'Vertex AI API' in the key's API restrictions "
+                             "to use Vertex.")
     return "vertex-ai", None
 
 
@@ -58,10 +78,12 @@ def _flag(name):
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def complete_json(system, prompt, schema, provider, model):
+def complete_json(system, prompt, schema, provider, model, api_key=None, vertex=None):
+    """api_key / vertex override the server config for this call only (None = use server config)."""
     if provider == "anthropic":
         import anthropic
-        resp = anthropic.Anthropic().messages.create(
+        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+        resp = client.messages.create(
             model=model, max_tokens=16000, system=system,
             messages=[{"role": "user", "content": prompt}],
             output_config={"format": {"type": "json_schema", "schema": schema}},
@@ -72,8 +94,8 @@ def complete_json(system, prompt, schema, provider, model):
 
     if provider in ("openai", "openrouter"):
         from openai import OpenAI
-        client = (OpenAI(api_key=os.environ.get("OPENROUTER_API_KEY"), base_url="https://openrouter.ai/api/v1")
-                  if provider == "openrouter" else OpenAI())
+        client = (OpenAI(api_key=api_key or server_key("openrouter"), base_url="https://openrouter.ai/api/v1")
+                  if provider == "openrouter" else (OpenAI(api_key=api_key) if api_key else OpenAI()))
         # OpenAI enforces the schema (strict structured output); OpenRouter models vary, so plain JSON mode there.
         fmt = ({"type": "json_object"} if provider == "openrouter" else
                {"type": "json_schema", "json_schema": {"name": "scorecard", "schema": schema, "strict": True}})
@@ -84,26 +106,25 @@ def complete_json(system, prompt, schema, provider, model):
         return resp.choices[0].message.content
 
     if provider == "gemini":
-        global _vertex_blocked
         from google import genai
         from google.genai import errors, types
-        key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        key = api_key or server_key("gemini")
         cfg = types.GenerateContentConfig(
             system_instruction=system, response_mime_type="application/json", response_json_schema=schema,
             temperature=0, automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))  # no tools
         call = lambda client: client.models.generate_content(model=model, contents=prompt, config=cfg).text
-        if not _flag("GEMINI_USE_VERTEX_AI"):
+        if not use_vertex(vertex):
             return call(genai.Client(api_key=key))
-        if os.environ.get("GOOGLE_CLOUD_PROJECT"):  # Vertex with Application Default Credentials
+        if os.environ.get("GOOGLE_CLOUD_PROJECT") and not api_key:  # Vertex with Application Default Credentials
             return call(genai.Client(vertexai=True, project=os.environ["GOOGLE_CLOUD_PROJECT"],
                                      location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global")))
-        if not _vertex_blocked:  # Vertex AI express mode: API key, no project
+        if _fingerprint(key) not in _vertex_blocked:  # Vertex AI express mode: API key, no project
             try:
                 return call(genai.Client(vertexai=True, api_key=key))
             except errors.ClientError as e:
                 if e.code != 403:
                     raise
-                _vertex_blocked = True  # key not allowed on Vertex: fall back to AI Studio (reported via gemini_backend)
+                _vertex_blocked.add(_fingerprint(key))  # not allowed on Vertex: use AI Studio (see gemini_backend)
         return call(genai.Client(api_key=key))
 
     raise ValueError(f"unsupported provider {provider!r}")

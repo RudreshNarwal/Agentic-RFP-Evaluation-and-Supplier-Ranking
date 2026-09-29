@@ -18,6 +18,7 @@ def test_metadata_is_prefilled_from_the_pdf_text():
 
 def test_app_full_flow_with_uploaded_pdfs(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setenv("LLM_MODEL", "")
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "ui.db"))
     at = AppTest.from_file("../app.py", default_timeout=60)
     at.secrets["LLM_PROVIDER"] = "mock"  # never hit a real API from tests, even if a key is configured
@@ -27,7 +28,8 @@ def test_app_full_flow_with_uploaded_pdfs(tmp_path, monkeypatch):
 
     at.file_uploader[0].set_value([(p.name, p.read_bytes(), "application/pdf") for p in sorted(PDFS.glob("*.pdf"))]).run()
     assert not at.exception
-    assert sorted(t.value for t in at.text_input) == ["Apex Systems", "BrightPath Tech", "NexaWorks", "Orbit Digital"]
+    names = sorted(t.value for t in at.text_input if t.label == "Supplier name")
+    assert names == ["Apex Systems", "BrightPath Tech", "NexaWorks", "Orbit Digital"]
     assert sorted(s.value for s in at.slider) == [5, 8, 9, 10]  # ratings read from the PDFs
 
     evaluate = next(b for b in at.button if "Evaluate" in b.label)
@@ -49,3 +51,57 @@ def test_save_criteria_round_trip(tmp_path):
     assert len(active) == 4 and active[0]["weight"] == 40 and sum(c["weight"] for c in active) == 100
     db.init_db(p)  # re-init must never overwrite user edits
     assert len(db.get_criteria(p)) == 4
+
+
+def _ui(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "ui.db"))
+    for k in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.setenv(k, "")  # no server key (and stops .env from filling one in)
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    monkeypatch.setenv("LLM_MODEL", "")
+    at = AppTest.from_file("../app.py", default_timeout=60)
+    at.secrets["LLM_PROVIDER"] = "mock"
+    at.run()
+    at.file_uploader[0].set_value([(p.name, p.read_bytes(), "application/pdf") for p in sorted(PDFS.glob("*.pdf"))]).run()
+    return at
+
+
+def _evaluate_button(at):
+    return next(b for b in at.button if "Evaluate" in b.label)
+
+
+def test_real_provider_without_any_key_blocks_evaluation(tmp_path, monkeypatch):
+    at = _ui(tmp_path, monkeypatch)
+    at.selectbox(key="llm_provider").set_value("gemini").run()
+    assert not at.exception
+    assert _evaluate_button(at).disabled
+    assert any("Add a Google API key" in w.value for w in at.warning)
+
+
+def test_ui_key_and_vertex_choice_reach_the_llm_but_never_the_env_or_run_json(tmp_path, monkeypatch):
+    import json
+    import os
+    seen = []
+
+    def fake(system, prompt, schema, provider, model, **creds):
+        seen.append((provider, model, creds))
+        return json.dumps({"criteria": [{"criterion_id": i, "score": 7, "max_score": 10, "justification": "j",
+                                         "evidence": ""} for i in range(1, 6)], "risks": [], "overall_summary": "s"})
+    monkeypatch.setattr("rfp.llm.complete_json", fake)
+    at = _ui(tmp_path, monkeypatch)
+    at.selectbox(key="llm_provider").set_value("gemini").run()
+    at.radio(key="llm_endpoint").set_value("Vertex AI").run()
+    at.text_input(key="llm_key_gemini").input("ui-secret-key").run()
+    assert not _evaluate_button(at).disabled
+    _evaluate_button(at).click().run()
+    assert not at.exception
+    assert seen and all(p == "gemini" and c == {"vertex": True, "api_key": "ui-secret-key"} for p, _, c in seen)
+    assert os.environ.get("GOOGLE_API_KEY") == ""
+    run = at.session_state["run"]
+    assert "ui-secret-key" not in json.dumps(run) and "ui-secret-key" not in json.dumps(db.load_run(run["rfp_run_id"]))
+
+
+def test_redact_removes_the_key_from_error_text():
+    from rfp.orchestrator import redact
+    assert redact("401 Incorrect API key provided: sk-abc123", {"api_key": "sk-abc123"}) == "401 Incorrect API key provided: ***"
+    assert redact("boom", {}) == "boom"

@@ -9,7 +9,7 @@ import streamlit as st
 
 from rfp import db, llm
 from rfp.document_tool import extract_metadata, extract_text
-from rfp.orchestrator import FORMULAS, check_inputs, run_batch
+from rfp.orchestrator import FORMULAS, check_inputs, redact, run_batch
 from rfp.ranking import TIE_BREAK_ORDER
 
 st.set_page_config(page_title="Agentic RFP Evaluation", page_icon="📑", layout="wide")
@@ -17,7 +17,6 @@ st.set_page_config(page_title="Agentic RFP Evaluation", page_icon="📑", layout
 
 @st.cache_resource
 def _init():
-    db.init_db()
     llm.load_env_file()  # local .env (gitignored); real env vars win
     # Streamlit secrets (local .streamlit/secrets.toml or Community Cloud) -> env vars read by rfp.llm
     try:
@@ -45,8 +44,61 @@ def _prefill(fname, data):
     return name, submitted, rating
 
 
-def _show_llm(slot, provider, model):
-    backend, note = llm.gemini_backend() if provider == "gemini" else (None, None)
+PROVIDER_LABELS = {"gemini": "Google Gemini", "anthropic": "Anthropic Claude", "openai": "OpenAI",
+                   "openrouter": "OpenRouter", "mock": "Mock (offline, no key)"}
+KEY_LABELS = {"gemini": "Google API key", "anthropic": "Anthropic API key", "openai": "OpenAI API key",
+              "openrouter": "OpenRouter API key"}
+PING_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+
+
+def _llm_settings():
+    """Sidebar provider / model / endpoint / key. Defaults come from the server config; a key typed here is kept only
+    in this browser session and passed to each call - never written to env, SQLite, the run JSON or logs."""
+    try:
+        env_provider, env_model = llm.config()
+    except ValueError as e:
+        st.warning(f"{e} Pick a provider below.")
+        env_provider, env_model = "mock", llm.DEFAULT_MODELS["mock"]
+    names = list(llm.DEFAULT_MODELS)
+    provider = st.selectbox("Provider", names, index=names.index(env_provider), format_func=PROVIDER_LABELS.get,
+                            key="llm_provider")
+    model = st.text_input("Model", value=env_model if provider == env_provider else llm.DEFAULT_MODELS[provider],
+                          key=f"llm_model_{provider}").strip() or llm.DEFAULT_MODELS[provider]
+    creds, ready = {}, True
+    if provider == "mock":
+        st.info("Mock mode: keyword heuristic for offline tests; scores are not meaningful.")
+        return provider, model, creds, ready
+
+    if provider == "gemini":
+        endpoint = st.radio("Google endpoint", ["AI Studio", "Vertex AI"], index=1 if llm.use_vertex() else 0,
+                            horizontal=True, key="llm_endpoint",
+                            help="AI Studio: key from aistudio.google.com. Vertex AI: a key allowed on the Vertex AI "
+                                 "API (express mode). If Vertex rejects the key, AI Studio is used and a warning shown.")
+        creds["vertex"] = endpoint == "Vertex AI"
+    has_server_key = bool(llm.server_key(provider))
+    key = st.text_input(KEY_LABELS[provider], type="password", key=f"llm_key_{provider}",
+                        placeholder="Using the key configured on the server" if has_server_key else "Paste your API key",
+                        help="Used only in this browser session for your runs. Never saved, logged or shared.").strip()
+    if key:
+        creds["api_key"] = key
+    elif not has_server_key:
+        st.warning(f"Add a {KEY_LABELS[provider]} to evaluate.")
+        ready = False
+
+    if st.button("Test connection", disabled=not ready, width="stretch"):
+        try:
+            llm.complete_json("Reply with JSON only.", 'Return {"ok": true}.', PING_SCHEMA, provider, model, **creds)
+            backend, note = llm.gemini_backend(**creds) if provider == "gemini" else (None, None)
+            st.success(f"Connected: {provider} · {model}" + (f" via {backend}" if backend else ""))
+            if note:
+                st.warning(note)
+        except Exception as e:
+            st.error(f"Connection failed: {type(e).__name__}: {redact(str(e), creds)[:300]}")
+    return provider, model, creds, ready
+
+
+def _show_llm(slot, provider, model, creds):
+    backend, note = llm.gemini_backend(**creds) if provider == "gemini" else (None, None)
     with slot.container():
         st.markdown(f"**LLM:** `{provider}` · `{model}`" + (f"  \n**Endpoint:** {backend}" if backend else ""))
         if note:
@@ -59,20 +111,16 @@ def _open_past_run():
 
 
 _init()
+db.init_db()  # every rerun: idempotent and cheap, and recreates tables if the DB file was reset
 
 # ---------- sidebar ----------
 with st.sidebar:
     st.title("📑 Agentic RFP Evaluation")
     st.caption("Supplier proposals → LLM scorecards → deterministic peer ranking")
-    try:
-        provider, model = llm.config()
-        llm_slot = st.empty()  # redrawn after a run: the Gemini endpoint is only known once Vertex has been tried
-        _show_llm(llm_slot, provider, model)
-        if provider == "mock":
-            st.info("Mock mode: keyword heuristic, no API key. Set `LLM_PROVIDER` for real evaluation.")
-    except ValueError as e:
-        provider = model = None
-        st.error(str(e))
+    with st.expander("⚙️ LLM settings", expanded=True):
+        provider, model, llm_creds, llm_ready = _llm_settings()
+    llm_slot = st.empty()  # redrawn after a run: the Gemini endpoint is only known once Vertex has been tried
+    _show_llm(llm_slot, provider, model, llm_creds)
 
     runs = [r for r in db.list_runs() if r["status"] == "completed"]
     if runs:
@@ -147,20 +195,21 @@ with tabs[1]:
             st.error(e)
     if len(submissions) == 1:
         st.warning("Only one supplier: peer benchmarks will simply compare it with itself.")
-    if provider is None:
-        st.error("Fix the LLM configuration (sidebar) before evaluating.")
+    if not llm_ready:
+        st.error("Add an API key in the sidebar (⚙️ LLM settings) before evaluating.")
 
-    if st.button("🚀 Evaluate suppliers", type="primary", disabled=bool(errors) or provider is None):
+    if st.button("🚀 Evaluate suppliers", type="primary", disabled=bool(errors) or not llm_ready):
         with st.status(f"Running agentic workflow with {provider}/{model}…", expanded=True) as status:
             try:
-                run = run_batch(submissions, provider=provider, model=model, on_progress=status.write)
-                _show_llm(llm_slot, provider, model)
+                run = run_batch(submissions, provider=provider, model=model, on_progress=status.write,
+                                credentials=llm_creds)
+                _show_llm(llm_slot, provider, model, llm_creds)
                 st.session_state.run = run
                 status.update(label=f"Completed {run['rfp_run_id']} · {len(run['warnings'])} warning(s)",
                               state="complete", expanded=False)
             except Exception as e:
                 status.update(label="Run failed", state="error")
-                st.error(f"{type(e).__name__}: {e}")
+                st.error(f"{type(e).__name__}: {redact(str(e), llm_creds)}")
         if st.session_state.get("run"):
             st.success("Done - open the **Leaderboard**, **Scorecards** and **Run details** tabs.")
 
