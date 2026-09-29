@@ -48,16 +48,19 @@ def check_inputs(submissions, criteria):
 
 
 def _extract(sub):
-    """Document Tool for one supplier. Returns (text or None, notes, log)."""
+    """Document Tool for one supplier. Returns (text or None, notes, log, stats)."""
     name = sub["supplier_name"]
     try:
         text, pages = extract_text(sub["pdf_bytes"])
     except ValueError as e:
-        return None, [f"{name}: evaluation failed ({e}); scored 0."], [("Document Tool", f"{name}: FAILED - unreadable file")]
+        return (None, [f"{name}: evaluation failed ({e}); scored 0."],
+                [("Document Tool", f"{name}: FAILED - unreadable file")], {"status": "unreadable"})
+    stats = {"status": "ok", "pages": pages, "chars": len(text)}
     log = [("Document Tool", f"{name}: extracted {len(text):,} chars from {pages} page(s)")]
     if len(text) < 200:
-        return None, [f"{name}: almost no extractable text ({len(text)} chars) - scanned/image PDF? LLM skipped."], log
-    return text, [], log
+        return (None, [f"{name}: almost no extractable text ({len(text)} chars) - scanned/image PDF? LLM skipped."],
+                log, {**stats, "status": "no text"})
+    return text, [], log, stats
 
 
 def _name_re(name):
@@ -127,9 +130,11 @@ def _share_scorecard(original, from_name, to_name, text, criteria):
             "repair": None, "failed": original["failed"]}
 
 
-def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=None, credentials=None):
+def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=None, credentials=None,
+              source_run_id=None):
     """submissions: [{supplier_name, submission_date (ISO str), experience_rating, pdf_bytes, filename}].
-    credentials: optional {"api_key", "vertex"} for this run only (e.g. entered in the UI); never persisted."""
+    credentials: optional {"api_key", "vertex"} for this run only (e.g. entered in the UI); never persisted.
+    source_run_id: the earlier run whose documents are being re-evaluated, if any."""
     creds = {k: v for k, v in (credentials or {}).items() if v is not None and v != ""}
     if provider is None:
         provider, model = llm.config()
@@ -148,8 +153,9 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
 
     now = datetime.now()
     run_id = f"RFP-{now:%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
-    db.create_run(run_id, now.isoformat(timespec="seconds"), provider, model, submissions, db_path)
-    log("Orchestrator", f"batch {run_id} created with {len(submissions)} pending supplier entries")
+    db.create_run(run_id, now.isoformat(timespec="seconds"), provider, model, submissions, db_path, source_run_id)
+    log("Orchestrator", f"batch {run_id} created with {len(submissions)} pending supplier entries"
+        + (f" (re-evaluation of {source_run_id})" if source_run_id else ""))
     try:
         criteria = db.get_criteria(db_path)  # step 4: reload so the run uses the latest active criteria
         if errors := criteria_errors(criteria):  # criteria may have been edited since the input check
@@ -160,7 +166,7 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
         extracted = [_extract(sub) for sub in submissions]
         # Step 4b - consistency guard: evaluate each distinct document once (supplier name masked).
         first_of, groups = {}, []
-        for i, (sub, (text, _, _)) in enumerate(zip(submissions, extracted)):
+        for i, (sub, (text, _, _, _)) in enumerate(zip(submissions, extracted)):
             key = _fingerprint(text, sub["supplier_name"]) if text else f"unique-{i}"
             first_of.setdefault(key, i)
             groups.append(first_of[key])
@@ -174,10 +180,12 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
                 results[futures[f]] = f.result()
                 progress(f"✓ {submissions[futures[f]]['supplier_name']} evaluated ({done}/{len(unique)} distinct documents)")
         outputs = []
-        for i, (sub, (text, notes, xlog)) in enumerate(zip(submissions, extracted)):
-            out = results[i] if groups[i] == i else _share_scorecard(
-                results[groups[i]], submissions[groups[i]]["supplier_name"], sub["supplier_name"], text, criteria)
-            outputs.append({**out, "warnings": notes + out["warnings"], "log": xlog + out["log"]})
+        for i, (sub, (text, notes, xlog, stats)) in enumerate(zip(submissions, extracted)):
+            shared_from = None if groups[i] == i else submissions[groups[i]]["supplier_name"]
+            out = results[i] if not shared_from else _share_scorecard(
+                results[groups[i]], shared_from, sub["supplier_name"], text, criteria)
+            outputs.append({**out, "warnings": notes + out["warnings"], "log": xlog + out["log"],
+                            "document": stats, "shared_from": shared_from})
         warnings = []
         for out in outputs:
             warnings += out["warnings"]
@@ -207,10 +215,12 @@ def run_batch(submissions, db_path=None, provider=None, model=None, on_progress=
                             evidence_verified=e["evidence_verified"])
             row.update(source_file=sub.get("filename", ""), evaluation_status="failed" if out["failed"] else "ok",
                        risks=out["card"]["risks"], overall_summary=out["card"]["overall_summary"],
-                       warnings=out["warnings"], self_correction=out["repair"])
+                       warnings=out["warnings"], self_correction=out["repair"], document=out["document"],
+                       shared_scorecard_from=out["shared_from"])
 
         run = {
             "rfp_run_id": run_id, "created_at": now.isoformat(timespec="seconds"), "status": "completed",
+            "source_run_id": source_run_id,
             "llm": {"provider": provider, "model": model, **({"backend": backend} if backend else {})},
             "criteria": criteria, "formulas": FORMULAS, "tie_break_order": TIE_BREAK_ORDER,
             "benchmarks": {str(k): v for k, v in ranked["benchmarks"].items()},

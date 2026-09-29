@@ -105,3 +105,23 @@ def test_redact_removes_the_key_from_error_text():
     from rfp.orchestrator import redact
     assert redact("401 Incorrect API key provided: sk-abc123", {"api_key": "sk-abc123"}) == "401 Incorrect API key provided: ***"
     assert redact("boom", {}) == "boom"
+
+
+def test_history_reevaluate_and_compare_in_the_ui(tmp_path, monkeypatch):
+    at = _ui(tmp_path, monkeypatch)  # mock provider, four PDFs uploaded
+    _evaluate_button(at).click().run()
+    assert not at.exception
+    first = at.session_state["run"]
+    assert at.session_state["main_tab"] == "③ Pipeline"  # the pipeline is shown after a run
+    assert any("Document Tool" in c.value for c in at.caption)  # pipeline stage cards rendered
+
+    assert at.selectbox(key="hist_pick").value == first["rfp_run_id"]  # History follows the run just made
+    at.button(key="hist_reevaluate").click().run()
+    assert not at.exception
+    second = at.session_state["run"]
+    assert second["rfp_run_id"] != first["rfp_run_id"] and second["source_run_id"] == first["rfp_run_id"]
+    assert at.session_state["main_tab"] == "⑦ History & Compare"
+    assert at.selectbox(key="cmp_before").value == first["rfp_run_id"]
+    assert at.selectbox(key="cmp_now").value == second["rfp_run_id"]
+    assert at.selectbox(key="hist_pick").value == second["rfp_run_id"]
+    assert any("Same ranking order" in s.value for s in at.success)  # mock scoring is deterministic

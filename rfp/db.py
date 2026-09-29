@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS rfp_runs (
     llm_provider  TEXT,
     llm_model     TEXT,
     warnings_json TEXT,
-    run_json      TEXT
+    run_json      TEXT,
+    source_run_id TEXT  -- set when this run re-evaluates an earlier run's documents
 );
 -- Rows are created 'pending' when the batch starts (step 3) and filled in when results are persisted (step 9).
 CREATE TABLE IF NOT EXISTS supplier_results (
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS supplier_results (
     ppi               REAL,
     final_rank        INTEGER,
     result_json       TEXT,
+    pdf_blob          BLOB,  -- the uploaded proposal, so the run can be re-evaluated later
     PRIMARY KEY (rfp_run_id, supplier_name)
 );
 """
@@ -58,10 +60,17 @@ def connect(path=None):
     return conn
 
 
+MIGRATIONS = [("rfp_runs", "source_run_id", "TEXT"), ("supplier_results", "pdf_blob", "BLOB")]
+
+
 def init_db(path=None):
-    """Create tables; seed criteria only when the table is empty (never overwrites user edits)."""
+    """Create tables (adding columns missing from older databases); seed criteria only when the table is empty
+    (never overwrites user edits)."""
     with connect(path) as conn:
         conn.executescript(SCHEMA)
+        for table, column, kind in MIGRATIONS:
+            if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         if conn.execute("SELECT COUNT(*) FROM evaluation_criteria").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO evaluation_criteria (criterion_id, name, description, weight, max_score, is_active)"
@@ -82,15 +91,16 @@ def save_criteria(rows, path=None):
               int(r["criterion_id"])) for r in rows])
 
 
-def create_run(run_id, created_at, provider, model, suppliers, path=None):
-    """Step 3: the batch row and one 'pending' entry per supplier, in one transaction."""
+def create_run(run_id, created_at, provider, model, suppliers, path=None, source_run_id=None):
+    """Step 3: the batch row and one 'pending' entry per supplier (with its PDF), in one transaction."""
     with connect(path) as conn:
-        conn.execute("INSERT INTO rfp_runs (rfp_run_id, created_at, status, llm_provider, llm_model) VALUES (?, ?, 'running', ?, ?)",
-                     (run_id, created_at, provider, model))
+        conn.execute("INSERT INTO rfp_runs (rfp_run_id, created_at, status, llm_provider, llm_model, source_run_id)"
+                     " VALUES (?, ?, 'running', ?, ?, ?)", (run_id, created_at, provider, model, source_run_id))
         conn.executemany(
-            "INSERT INTO supplier_results (rfp_run_id, supplier_name, submission_date, experience_rating, source_file)"
-            " VALUES (?, ?, ?, ?, ?)",
-            [(run_id, s["supplier_name"], s["submission_date"], s["experience_rating"], s.get("filename")) for s in suppliers])
+            "INSERT INTO supplier_results (rfp_run_id, supplier_name, submission_date, experience_rating, source_file,"
+            " pdf_blob) VALUES (?, ?, ?, ?, ?, ?)",
+            [(run_id, s["supplier_name"], s["submission_date"], s["experience_rating"], s.get("filename"),
+              s.get("pdf_bytes")) for s in suppliers])
 
 
 def fail_run(run_id, error, path=None):
@@ -118,9 +128,27 @@ def complete_run(run, path=None):
 
 
 def list_runs(path=None):
+    """Newest first, with supplier count, winner and whether the documents are stored for re-evaluation."""
     with connect(path) as conn:
-        return [dict(r) for r in conn.execute(
-            "SELECT rfp_run_id, created_at, status, llm_provider, llm_model FROM rfp_runs ORDER BY created_at DESC")]
+        return [dict(r) for r in conn.execute("""
+            SELECT r.rfp_run_id, r.created_at, r.status, r.llm_provider, r.llm_model, r.source_run_id,
+                   COUNT(s.supplier_name) AS suppliers,
+                   MAX(CASE WHEN s.final_rank = 1 THEN s.supplier_name END) AS winner,
+                   COUNT(s.pdf_blob) = COUNT(s.supplier_name) AND COUNT(s.supplier_name) > 0 AS can_reevaluate
+            FROM rfp_runs r LEFT JOIN supplier_results s ON s.rfp_run_id = r.rfp_run_id
+            GROUP BY r.rfp_run_id ORDER BY r.rowid DESC""")]
+
+
+def get_run_inputs(run_id, path=None):
+    """The submissions of an earlier run (names, dates, ratings, PDFs), ready to pass to run_batch again."""
+    with connect(path) as conn:
+        rows = conn.execute("SELECT supplier_name, submission_date, experience_rating, source_file, pdf_blob"
+                            " FROM supplier_results WHERE rfp_run_id=? ORDER BY rowid", (run_id,)).fetchall()
+    if not rows or any(r["pdf_blob"] is None for r in rows):
+        return None  # run made before documents were stored
+    return [{"supplier_name": r["supplier_name"], "submission_date": r["submission_date"],
+             "experience_rating": r["experience_rating"], "filename": r["source_file"] or "",
+             "pdf_bytes": bytes(r["pdf_blob"])} for r in rows]
 
 
 def load_run(run_id, path=None):

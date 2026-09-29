@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from rfp import db, llm
+from rfp.compare import compare_runs
 from rfp.document_tool import extract_metadata, extract_text
 from rfp.orchestrator import FORMULAS, check_inputs, redact, run_batch
 from rfp.ranking import TIE_BREAK_ORDER
@@ -105,11 +106,6 @@ def _show_llm(slot, provider, model, creds):
             st.warning(note)
 
 
-def _open_past_run():
-    if st.session_state.past_run != "—":
-        st.session_state.run = db.load_run(st.session_state.past_run)
-
-
 _init()
 db.init_db()  # every rerun: idempotent and cheap, and recreates tables if the DB file was reset
 
@@ -122,15 +118,40 @@ with st.sidebar:
     llm_slot = st.empty()  # redrawn after a run: the Gemini endpoint is only known once Vertex has been tried
     _show_llm(llm_slot, provider, model, llm_creds)
 
-    runs = [r for r in db.list_runs() if r["status"] == "completed"]
-    if runs:
-        st.selectbox("Open a past run", ["—"] + [r["rfp_run_id"] for r in runs], key="past_run",
-                     on_change=_open_past_run)
     st.divider()
     st.caption("Built by **Rudresh** · Streamlit + SQLite + any JSON-capable LLM")
 
+TABS = ["① Criteria", "② Suppliers & Evaluate", "③ Pipeline", "④ Leaderboard", "⑤ Scorecards", "⑥ Run details",
+        "⑦ History & Compare"]
+if "_goto" in st.session_state:  # a tab switch requested by the previous run (widgets can't change after render)
+    st.session_state.main_tab = st.session_state.pop("_goto")
+if "_pick" in st.session_state:  # History selection follows the run just made or opened
+    st.session_state.hist_pick = st.session_state.pop("_pick")
+if "_compare" in st.session_state:
+    st.session_state.cmp_before, st.session_state.cmp_now = st.session_state.pop("_compare")
+
+
+def _execute(submissions, source_run_id=None):
+    """Run the agentic workflow with live progress, then show its Pipeline (or the comparison for a re-evaluation)."""
+    label = f"Re-evaluating {source_run_id}" if source_run_id else "Running agentic workflow"
+    with st.status(f"{label} with {provider}/{model}…", expanded=True) as status:
+        try:
+            new = run_batch(submissions, provider=provider, model=model, on_progress=status.write,
+                            credentials=llm_creds, source_run_id=source_run_id)
+        except Exception as e:
+            status.update(label="Run failed", state="error")
+            st.error(f"{type(e).__name__}: {redact(str(e), llm_creds)}")
+            return
+    st.session_state.run = new
+    st.session_state._pick = new["rfp_run_id"]
+    if source_run_id:
+        st.session_state._compare = (source_run_id, new["rfp_run_id"])
+    st.session_state._goto = "⑦ History & Compare" if source_run_id else "③ Pipeline"
+    st.rerun()
+
+
 run = st.session_state.get("run")
-tabs = st.tabs(["① Criteria", "② Suppliers & Evaluate", "③ Leaderboard", "④ Scorecards", "⑤ Run details"])
+tabs = st.tabs(TABS, key="main_tab", on_change="rerun")  # tracked, so a run can open its Pipeline tab
 
 # ---------- 1. criteria ----------
 with tabs[0]:
@@ -199,19 +220,7 @@ with tabs[1]:
         st.error("Add an API key in the sidebar (⚙️ LLM settings) before evaluating.")
 
     if st.button("🚀 Evaluate suppliers", type="primary", disabled=bool(errors) or not llm_ready):
-        with st.status(f"Running agentic workflow with {provider}/{model}…", expanded=True) as status:
-            try:
-                run = run_batch(submissions, provider=provider, model=model, on_progress=status.write,
-                                credentials=llm_creds)
-                _show_llm(llm_slot, provider, model, llm_creds)
-                st.session_state.run = run
-                status.update(label=f"Completed {run['rfp_run_id']} · {len(run['warnings'])} warning(s)",
-                              state="complete", expanded=False)
-            except Exception as e:
-                status.update(label="Run failed", state="error")
-                st.error(f"{type(e).__name__}: {redact(str(e), llm_creds)}")
-        if st.session_state.get("run"):
-            st.success("Done - open the **Leaderboard**, **Scorecards** and **Run details** tabs.")
+        _execute(submissions)
 
 
 def _md(text):
@@ -228,16 +237,84 @@ def _verified(s):
 
 
 def _need_run():
-    st.info("No run yet. Evaluate suppliers in tab ②, or open a past run from the sidebar.")
+    st.info("No run open. Evaluate suppliers in tab ②, or open a past run in tab ⑦ History & Compare.")
 
 
-# ---------- 3. leaderboard ----------
+def _run_header(r):
+    src = f" · re-evaluation of `{r['source_run_id']}`" if r.get("source_run_id") else ""
+    st.caption(f"Viewing run `{r['rfp_run_id']}` · {r['created_at'].replace('T', ' ')} · "
+               f"`{r['llm']['provider']}/{r['llm']['model']}`{src}")
+
+
+def _stage(col, title, value, caption):
+    with col.container(border=True):
+        st.caption(title)
+        st.markdown(f"#### {value}")
+        st.caption(caption)
+
+
+def _pipeline_row(s):
+    doc = s.get("document") or {}
+    doc_txt = (f"{doc['pages']} page(s) · {doc['chars']:,} chars" if doc.get("status") == "ok"
+               else {"no text": "⚠️ no text layer", "unreadable": "⚠️ unreadable file"}.get(doc.get("status"), "—"))
+    if s.get("shared_scorecard_from"):
+        agent = f"🔗 shared from {s['shared_scorecard_from']} (identical document)"
+    elif s.get("evaluation_status") == "failed":
+        agent = "⚠️ not evaluated"
+    else:
+        agent = "✅ scorecard returned"
+    sc = s.get("self_correction")
+    fix = "—" if not sc else (f"{len(sc['issues_before'])} → {len(sc['issues_after'])} issues, "
+                              + ("used" if sc["accepted"] else "first answer kept"))
+    return {"Supplier": s["supplier_name"], "📄 Document Tool": doc_txt, "🧠 Evaluation Agent": agent,
+            "✅ Validation Tool": f"{len(s['warnings'])} issue(s) · {_verified(s)} quotes verified",
+            "🔁 Self-correction": fix, "🏁 Ranking Tool": f"#{s['final_rank']} · PPI {s['ppi']:.2f}",
+            "💾 SQLite": "failed" if s.get("evaluation_status") == "failed" else "scored"}
+
+
+def _show_pipeline(r):
+    """How the run went through each tool: stage totals, then one row per supplier, then every step in order."""
+    sup, n = r["suppliers"], len(r["suppliers"])
+    docs_ok = sum((s.get("document") or {}).get("status") == "ok" for s in sup)
+    shared = sum(bool(s.get("shared_scorecard_from")) for s in sup)
+    failed = sum(s.get("evaluation_status") == "failed" for s in sup)
+    quotes = sum(len(s["criteria"]) for s in sup)
+    verified = sum(bool(c.get("evidence_verified")) for s in sup for c in s["criteria"])
+    fixes = [s["self_correction"] for s in sup if s.get("self_correction")]
+    cols = st.columns(6)
+    _stage(cols[0], "① 📄 Document Tool", f"{docs_ok}/{n}", "PDFs read" if docs_ok == n else f"{n - docs_ok} unreadable")
+    _stage(cols[1], "② 🧠 Evaluation Agent", f"{n - failed}/{n}",
+           "scorecards" + (f" · {shared} shared" if shared else "") + (f" · {failed} failed" if failed else ""))
+    _stage(cols[2], "③ ✅ Validation Tool", f"{verified}/{quotes}", f"quotes verified · {len(r['warnings'])} warning(s)")
+    _stage(cols[3], "④ 🔁 Self-correction", str(len(fixes)),
+           f"{sum(f['accepted'] for f in fixes)} accepted" if fixes else "not needed")
+    _stage(cols[4], "⑤ 🏁 Ranking Tool", sup[0]["supplier_name"], f"rank 1 · PPI {sup[0]['ppi']:.2f}")
+    _stage(cols[5], "⑥ 💾 SQLite", "✓ saved" if r["status"] == "completed" else r["status"],
+           f"run + {n} supplier entries")
+    st.markdown("**Per supplier** - what each tool did")
+    st.dataframe(pd.DataFrame([_pipeline_row(s) for s in sup]), hide_index=True, width="stretch")
+    st.markdown("**Every tool call, in order**")
+    st.dataframe(pd.DataFrame(r["steps"]), hide_index=True, width="stretch")
+
+
+# ---------- 3. pipeline ----------
 with tabs[2]:
+    if not run:
+        _need_run()
+    else:
+        st.subheader("Agentic pipeline")
+        _run_header(run)
+        _show_pipeline(run)
+
+
+# ---------- 4. leaderboard ----------
+with tabs[3]:
     if not run:
         _need_run()
     else:
         sup = run["suppliers"]
         st.subheader(f"Leaderboard · {run['rfp_run_id']}")
+        _run_header(run)
         top = sup[0]
         m = st.columns(3)
         m[0].metric("🏆 Rank 1", top["supplier_name"])
@@ -261,11 +338,12 @@ with tabs[2]:
         st.dataframe(comp, width="stretch")
         st.bar_chart(board.set_index("Supplier")[["PPI", "Absolute score"]], stack=False, horizontal=True, sort=False)
 
-# ---------- 4. scorecards ----------
-with tabs[3]:
+# ---------- 5. scorecards ----------
+with tabs[4]:
     if not run:
         _need_run()
     else:
+        _run_header(run)
         names = [s["supplier_name"] for s in run["suppliers"]]
         s = run["suppliers"][names.index(st.selectbox("Supplier", names))]
         m = st.columns(4)
@@ -304,14 +382,15 @@ with tabs[3]:
             for w in s["warnings"] or ["None."]:
                 st.markdown(f"- {_md(w)}")
 
-# ---------- 5. run details ----------
-with tabs[4]:
+# ---------- 6. run details ----------
+with tabs[5]:
     if not run:
         _need_run()
     else:
         st.subheader(f"RFP_RUN_ID: `{run['rfp_run_id']}`")
         st.markdown(f"**Status:** {run['status']} · **Created:** {run['created_at'].replace('T', ' ')} · "
-                    f"**LLM:** `{run['llm']['provider']}` / `{run['llm']['model']}` · **Suppliers:** {len(run['suppliers'])}")
+                    f"**LLM:** `{run['llm']['provider']}` / `{run['llm']['model']}` · **Suppliers:** {len(run['suppliers'])}"
+                    + (f" · **Re-evaluation of:** `{run['source_run_id']}`" if run.get("source_run_id") else ""))
         st.download_button("⬇️ Download complete result (JSON)", json.dumps(run, indent=2),
                            file_name=f"{run['rfp_run_id']}.json", mime="application/json", type="primary")
 
@@ -327,9 +406,93 @@ with tabs[4]:
                                     "Submission date": s["submission_date"], "Experience": s["experience_rating"],
                                     "Explanation": s["tie_break_note"]} for s in run["suppliers"]]),
                      hide_index=True, width="stretch", column_config={"PPI": st.column_config.NumberColumn(format="%.4f")})
-        st.markdown("**Orchestrator step log** - every tool call, in order")
-        st.dataframe(pd.DataFrame(run["steps"]), hide_index=True, width="stretch")
+        st.caption("The step-by-step tool log is in the **③ Pipeline** tab.")
         st.markdown("**Formulas (deterministic Python)**")
         st.dataframe(pd.DataFrame(FORMULAS.items(), columns=["Metric", "Formula"]), hide_index=True, width="stretch")
         with st.expander("Raw JSON"):
             st.json(run, expanded=False)
+
+
+# ---------- 7. history & compare ----------
+def _signed(v):
+    return "—" if v is None else f"{v:+.2f}"
+
+
+with tabs[6]:
+    history = db.list_runs()
+    completed = [h for h in history if h["status"] == "completed"]
+    if not history:
+        st.info("No runs yet. Evaluate suppliers in tab ② - every run is saved here with its PDFs.")
+    else:
+        st.subheader("Run history")
+        st.dataframe(pd.DataFrame([{
+            "Run ID": h["rfp_run_id"], "Created": h["created_at"].replace("T", " "), "Status": h["status"],
+            "LLM": f"{h['llm_provider']}/{h['llm_model']}", "Suppliers": h["suppliers"], "Winner": h["winner"] or "—",
+            "Re-evaluation of": h["source_run_id"] or "", "Re-evaluate": "✓" if h["can_reevaluate"] else "—"}
+            for h in history]), hide_index=True, width="stretch")
+
+        ids = [h["rfp_run_id"] for h in history]
+        by_id = {h["rfp_run_id"]: h for h in history}
+        pick = st.selectbox("Select a run", ids, key="hist_pick",
+                            format_func=lambda i: f"{i} · {by_id[i]['winner'] or by_id[i]['status']} · {by_id[i]['llm_model']}")
+        chosen = by_id[pick]
+        c1, c2 = st.columns(2)
+        if c1.button("📂 Open (Pipeline, Leaderboard, Scorecards)", key="hist_open", width="stretch",
+                     disabled=chosen["status"] != "completed"):
+            st.session_state.run = db.load_run(pick)
+            st.session_state._goto = "③ Pipeline"
+            st.rerun()
+        if c2.button("🔁 Re-evaluate these PDFs now", key="hist_reevaluate", type="primary", width="stretch",
+                     disabled=not chosen["can_reevaluate"] or not llm_ready):
+            inputs = db.get_run_inputs(pick)
+            errs = check_inputs(inputs, db.get_criteria())
+            if errs:
+                st.error(" ".join(errs))
+            else:
+                _execute(inputs, source_run_id=pick)
+        st.caption(f"Re-evaluate runs the same PDFs, names, dates and ratings again with the **current criteria** and the "
+                   f"model selected in the sidebar (`{provider}/{model}`), saves it as a new run, then compares the two."
+                   + ("" if chosen["can_reevaluate"] else " This run was made before PDFs were stored, so it can't be re-run."))
+
+        st.divider()
+        st.subheader("Compare two runs")
+        if len(completed) < 2:
+            st.info("Compare needs two completed runs. Evaluate again, or re-evaluate a run above.")
+        else:
+            done = [h["rfp_run_id"] for h in completed]
+            if st.session_state.get("cmp_now") not in done:
+                st.session_state.cmp_now = run["rfp_run_id"] if run and run["rfp_run_id"] in done else done[0]
+            if st.session_state.get("cmp_before") not in done or st.session_state.cmp_before == st.session_state.cmp_now:
+                now_row = by_id[st.session_state.cmp_now]
+                older = [i for i in done if i != st.session_state.cmp_now]
+                st.session_state.cmp_before = now_row["source_run_id"] if now_row["source_run_id"] in older else older[0]
+            a, b = st.columns(2)
+            before_id = a.selectbox("Previous run", done, key="cmp_before")
+            now_id = b.selectbox("Current run", done, key="cmp_now")
+            if before_id == now_id:
+                st.info("Pick two different runs.")
+            else:
+                cmp = compare_runs(db.load_run(before_id), db.load_run(now_id))
+                if cmp["same_order"]:
+                    st.success("Same ranking order in both runs.")
+                else:
+                    st.warning("The ranking order changed between the two runs.")
+                for change in cmp["changes"]:
+                    st.markdown(f"- {change}")
+                if not cmp["changes"]:
+                    st.caption("Same model and criteria in both runs, so differences come from the LLM's judgment alone.")
+                st.dataframe(pd.DataFrame([{
+                    "Supplier": r["supplier"], "Rank before": r["rank_before"], "Rank now": r["rank_now"],
+                    "Movement": r["movement"], "PPI before": r["ppi_before"], "PPI now": r["ppi_now"],
+                    "Δ PPI": _signed(r["ppi_change"]), "Absolute before": r["absolute_before"],
+                    "Absolute now": r["absolute_now"], "Δ Absolute": _signed(r["absolute_change"])}
+                    for r in cmp["suppliers"]]), hide_index=True, width="stretch",
+                    column_config={k: st.column_config.NumberColumn(format="%.2f")
+                                   for k in ("PPI before", "PPI now", "Absolute before", "Absolute now")})
+                if cmp["criteria"]:
+                    st.markdown("**Criterion scores** - before → now")
+                    grid = {}
+                    for c in cmp["criteria"]:
+                        change = "" if not c["change"] else f" ({c['change']:+g})"
+                        grid.setdefault(c["supplier"], {})[c["criterion"]] = f"{c['score_before']:g} → {c['score_now']:g}{change}"
+                    st.dataframe(pd.DataFrame(grid).T, width="stretch")

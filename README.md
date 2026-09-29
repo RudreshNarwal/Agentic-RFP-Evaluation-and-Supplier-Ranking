@@ -43,6 +43,30 @@ then the Ranking Tool, then persistence to SQLite.
 
 ---
 
+## Pipeline, history and re-evaluation
+
+The app has seven tabs: ① Criteria · ② Suppliers & Evaluate · **③ Pipeline** · ④ Leaderboard · ⑤ Scorecards ·
+⑥ Run details · **⑦ History & Compare**.
+
+- **③ Pipeline opens automatically after every run.** Cards across the top give each stage's result: Document Tool (PDFs
+  read), Evaluation Agent (scorecards returned or shared), Validation Tool (quotes verified), Self-correction, Ranking
+  Tool (winner) and SQLite. Below them is one row per supplier showing what each tool did, then every tool call in order.
+- **⑦ History & Compare** lists every run with its date, model, supplier count, winner and which run it re-evaluated.
+  - **Open** loads a past run into the Pipeline, Leaderboard, Scorecards and Run details tabs.
+  - **Re-evaluate** runs the same PDFs, names, dates and ratings again with the **current criteria** and the model
+    selected in the sidebar. Each run's PDFs are stored in SQLite, so nothing has to be uploaded again. The new run is
+    linked to the old one, and the app opens the comparison.
+  - **Compare** puts any two runs side by side: rank movement (▲/▼/=), PPI and absolute-score changes, every
+    criterion's score before → now, and what changed between them (model, criteria weights, suppliers added or removed).
+
+With the same model and criteria, a re-evaluation shows how consistent the LLM's judgment is. In the run below, the ranking
+held and individual criterion scores moved by ±0.5–1. After changing a weight or the model, it shows exactly what that
+change did to the ranking.
+
+![Pipeline](docs/screenshots/3_pipeline.png)
+
+![Compare two runs](docs/screenshots/9_compare.png)
+
 ## Architecture
 
 ```mermaid
@@ -111,9 +135,10 @@ under different names (`tests/test_pipeline_mock.py`).
 | Table | Fields |
 |---|---|
 | `evaluation_criteria` | criterion_id, name, description, weight, max_score, is_active |
-| `rfp_runs` | rfp_run_id, created_at, status (`running` / `completed` / `failed`), llm_provider, llm_model, warnings_json, run_json |
-| `supplier_results` | rfp_run_id (FK), supplier_name, submission_date, experience_rating, source_file, status (`pending` / `scored` / `failed`), absolute_score, ppi, final_rank, result_json |
+| `rfp_runs` | rfp_run_id, created_at, status (`running` / `completed` / `failed`), llm_provider, llm_model, warnings_json, run_json, source_run_id (the run it re-evaluated) |
+| `supplier_results` | rfp_run_id (FK), supplier_name, submission_date, experience_rating, source_file, status (`pending` / `scored` / `failed`), absolute_score, ppi, final_rank, result_json, pdf_blob (the uploaded proposal, for re-evaluation) |
 
+Older databases are upgraded in place on start-up (new columns are added; existing runs are kept, but can't be re-evaluated because their PDFs weren't stored).
 Supplier entries are created as `pending` at step 3, filled in and set to `scored` at step 9, or set to `failed` if that
 supplier couldn't be evaluated (or the whole run crashed). Foreign keys are enforced. The seeded criteria are Technical Capability 30%, Implementation Plan 20%, Commercial
 Value 20%, Security & Compliance 20% and Support & Experience 10%, all with max score 10. You can edit them in the
@@ -173,13 +198,14 @@ reproducibility comes from the consistency guard and from storing every validate
 pytest -q
 ```
 
-42 tests, covering:
+46 tests, covering:
 - **Ranking:** hand-computed scores, benchmarks and PPI; zero-benchmark handling; every tie-break level; case-insensitive names; float-noise ties; order independence.
 - **Validation:** malformed and fenced JSON; missing, unknown and duplicate criteria; non-numeric, out-of-range and `null` fields; missing evidence; evidence grounding (real quotes accepted; invented quotes and wrong `[Page N]` tags flagged).
 - **Pipeline:** determinism; step-3 entries marked `failed` on a crash and failed suppliers stored as `failed`; the self-correction loop (a fixed answer is accepted, a worse one rejected, a repair of invalid JSON kept, blank evidence alone never triggers a repair); whole-word name masking; identical proposals sharing one scorecard so rules 2–4 decide; scanned and corrupt PDFs; LLM outage; invalid inputs and non-ISO dates rejected before a run is created.
 - **UI:** a Streamlit `AppTest` run that uploads the four sample PDFs, checks the pre-filled names and ratings, and evaluates; metadata extraction.
 - **LLM config:** `.env` loading (real env vars win); the Vertex → AI Studio fallback with its warning, tracked per key; a key passed per call is used without touching the environment.
 - **LLM settings panel:** a real provider with no key disables Evaluate; a UI-entered key and the Vertex choice reach the LLM call but never the environment, the run JSON or SQLite; keys are removed from error text.
+- **History & compare:** PDFs stored and a run re-evaluated with changed criteria; rank movement and score changes; suppliers added or removed; old databases upgraded in place; in the UI, the Pipeline tab opening after a run and Re-evaluate opening the comparison.
 
 ---
 
@@ -216,7 +242,7 @@ The complete result of any run, including every scorecard, is exported from **Ru
 - Evidence grounding compares lowercase alphanumeric words, so punctuation, line breaks and page tags don't matter. Quotes may join separate passages with "...". Each passage needs at least 3 words.
 - Documents longer than 80,000 characters are truncated for the LLM, with a warning.
 - Proposals are untrusted input. The prompt tells the model to treat them as data and to flag embedded instructions as risks. Scores are clipped to range and all the maths stays in Python.
-- Streamlit Community Cloud storage is ephemeral: the DB is re-created and re-seeded on restart. Download the run JSON to keep results.
+- Streamlit Community Cloud storage is ephemeral: the DB, including run history and stored PDFs, is re-created and re-seeded on restart. Download the run JSON to keep results.
 
 ---
 
@@ -225,9 +251,10 @@ The complete result of any run, including every scorecard, is exported from **Ru
 | | |
 |---|---|
 | ![Criteria](docs/screenshots/1_criteria.png) Criteria | ![Supplier input](docs/screenshots/2_suppliers_input.png) Upload, metadata pre-filled from the PDFs |
-| ![Running](docs/screenshots/3_running.png) Agentic workflow running (live progress) | ![Run completed](docs/screenshots/4_run_completed.png) Run completed, every tool call logged |
-| ![Leaderboard](docs/screenshots/5_leaderboard.png) Leaderboard | ![Scorecard](docs/screenshots/6_scorecard.png) Scorecard, verified evidence |
-| ![Run details](docs/screenshots/7_run_details.png) Run details, tie-breaks, JSON download | |
+| ![Running](docs/screenshots/3_running.png) Agentic workflow running (live progress) | ![Pipeline](docs/screenshots/3_pipeline.png) Pipeline tab, opened after the run |
+| ![Run completed](docs/screenshots/4_run_completed.png) Run completed, every tool call logged | ![Scorecard](docs/screenshots/6_scorecard.png) Scorecard, verified evidence |
+| ![Run details](docs/screenshots/7_run_details.png) Run details, tie-breaks, JSON download | ![History](docs/screenshots/8_history.png) Run history: open or re-evaluate |
+| ![Compare](docs/screenshots/9_compare.png) Compare two runs | ![Leaderboard](docs/screenshots/5_leaderboard.png) Leaderboard |
 
 ---
 
@@ -267,10 +294,12 @@ Record the live app (about 3–4 minutes):
 1. **Criteria:** show the 5 criteria totalling 100%. Set a weight to 40 and click **Save** to show the "must total 100%" error, then undo.
 2. **Input + validation error:** upload the 4 PDFs from `sample_pdfs/` and show that name, date and rating are pre-filled. Rename one supplier to a duplicate to show the error and the disabled button, then fix it.
 3. **Successful run:** click **Evaluate** and let the progress messages show each tool running.
-4. **Leaderboard:** ranks, absolute score, PPI, criterion comparison.
-5. **Scorecard:** benchmarks, gaps, ✅ verified evidence and the justification for each score.
-6. **Run details:** `RFP_RUN_ID`, warnings, tie-break explanations, step log and formulas; download the JSON.
-7. **Error case (optional):** upload a PDF with no text layer (e.g. a scan) to show it flagged ⚠️, scored 0 and ranked last.
+4. **Pipeline:** after Evaluate, the app opens ③ Pipeline. Walk through the stage cards and the per-supplier rows.
+5. **Leaderboard:** ranks, absolute score, PPI, criterion comparison.
+6. **Scorecard:** benchmarks, gaps, ✅ verified evidence and the justification for each score.
+7. **Run details:** `RFP_RUN_ID`, warnings, tie-break explanations and formulas; download the JSON.
+8. **History & Compare:** in ⑦, select the run and click **Re-evaluate**. Show the comparison (rank movement, score changes). Optionally change a criterion weight first to show its effect.
+9. **Error case (optional):** upload a PDF with no text layer (e.g. a scan) to show it flagged ⚠️, scored 0 and ranked last.
 
 ## Submission checklist (brief section 10)
 
@@ -299,6 +328,6 @@ app.py                    Streamlit UI (5 screens)
 rfp/                      orchestrator, tools, agents, db
 seed_db.py                DB creation + seed script
 sample_pdfs/              4 fictional supplier proposals
-tests/                    pytest suite (42 tests)
+tests/                    pytest suite (46 tests)
 docs/screenshots/         README images
 ```
